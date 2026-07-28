@@ -43,6 +43,7 @@
      10-architecture — Entity base class            §11.3
      10-architecture — EntityManager                §11.3
      10-architecture — InputManager                 §11.3
+     02-movement-destruction ......... Building + cell grid (§3.2)
      01-monsters ..................... Monster class (all three types identical)
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
      09-art-audio .................... placeholder rectangle art
@@ -51,7 +52,10 @@
      10-architecture — main loop (fixed timestep + interpolated render)  §11.1
 
    Session 1 scope: loop, state machine, entity model, input, one controllable
-   monster on an empty street. No buildings/enemies/health/score yet.
+   monster on an empty street.
+   Session 2 scope: Building entity (grid of destructible cells), a hardcoded
+   row of buildings, climbing/cling, rooftop walking, jump-to-grab. Cells carry
+   damage state but nothing damages them yet — that's Session 3.
    ========================================================================== */
 
 
@@ -119,6 +123,58 @@ const CONFIG = {
     walkCycleTime: 0.36,      // s per full two-step walk cycle at walkSpeed
     spawnX: 120,              // P1 spawn; later slots offset by spawnSpacing
     spawnSpacing: 60,
+
+    /* -- Climbing / cling (02-movement-destruction.md §3.1) --------------
+       [INFERRED] The GDD says "up/down climbs it; the monster clings to the
+       wall" and nothing about speed or about moving sideways on a face.
+       Everything below is a first-pass guess (13-inferred-items.md #13/#14). */
+    climbSpeed: 60,           // px/s up or down a building face
+    climbSideSpeed: 60,       // px/s sideways along a face [INFERRED — see #14]
+    climbCycleTime: 0.5,      // s per full climb animation cycle
+    grabMinOverlap: 10,       // px of body-over-face needed to grab a face
+    grabLockout: 0.18,        // s after jumping off a face before it re-grabs
+  },
+
+  /* ---- Buildings (02-movement-destruction.md §3.2) ---------------------
+     "A building is a vertical stack of destructible cells (a grid of
+     windows/wall sections)." Cells carry state + HP from Session 2 onward so
+     Session 3 only has to add the damage path, not the data model.
+
+     dayLayout is hardcoded on purpose — SESSION-PLAN says data-driven days
+     (LevelData) arrive in Session 9. It lays buildings left to right from
+     startX, each followed by gapAfter px of street.
+
+     HEIGHT CONSTRAINT: every building must be taller than the monster's jump
+     apex (~40 px at the Session 1 values) or a monster could jump off the
+     street straight onto a roof — see the note in Monster.updateAir. The
+     shortest entry below is 5 rows = 110 px, well clear.                    */
+  buildings: {
+    cellWidth: 22,
+    cellHeight: 22,
+    cellHp: 3,                // hits to take a cell INTACT→CRACKED→HOLE→GONE
+                              // [INFERRED] — Session 3 owns the damage curve
+    startX: 6,                // left edge of the first building
+    // cols × rows × palette, laid out across the street. 5 buildings, total
+    // 396 px of frontage + 104 px of gaps = the full 6..506 playable span.
+    dayLayout: [
+      { cols: 3, rows: 7, palette: 0, gapAfter: 24 },
+      { cols: 4, rows: 5, palette: 1, gapAfter: 30 },
+      { cols: 3, rows: 9, palette: 2, gapAfter: 24 },
+      { cols: 5, rows: 6, palette: 0, gapAfter: 26 },
+      { cols: 3, rows: 8, palette: 1, gapAfter: 0  },
+    ],
+    roofCapHeight: 4,         // drawn *below* the roof line, so feet rest on top
+    roofCapOverhang: 1,
+    windowInsetX: 5,
+    windowInsetY: 5,
+    litWindowEvery: 5,        // 1-in-N cells show a lit window (deterministic)
+    crackColor: '#20242f',
+    holeColor: '#0b0e16',
+    palettes: [
+      { wall: '#5a4a44', wallShade: '#483a35', roof: '#6d5b52', windowLit: '#e8c452', windowDark: '#2a2530' },
+      { wall: '#44525a', wallShade: '#35414a', roof: '#566670', windowLit: '#d8e08a', windowDark: '#232b33' },
+      { wall: '#53485e', wallShade: '#41384a', roof: '#665a73', windowLit: '#e0a86a', windowDark: '#282232' },
+    ],
   },
 
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
@@ -423,6 +479,147 @@ class InputManager {
 
 
 /* ==========================================================================
+   02-movement-destruction §3.2 — Building
+
+   "A building is a vertical stack of destructible cells (a grid of
+   windows/wall sections)." Each cell holds a state and HP. Session 2 only
+   *reads* the grid (to draw it); Session 3 adds the punch → CRACKED → HOLE →
+   GONE progression and collapse, so the state lives here from the start.
+
+   Anchor matches Entity: x = horizontal centre, y = base (feet line) — which
+   is the street, so a building's base y is always CONFIG.world.groundY and
+   `top` is its roof line. Cell (0,0) is the TOP-LEFT cell.
+
+   Traversal note: the monster walks the street *in front of* the buildings
+   (the 1986 original does the same — the street is a lane, not a corridor),
+   so a building never blocks ground movement. It is only solid in the sense
+   that a clinging monster is pinned flush to its face and a monster on the
+   roof stands on its top. [INFERRED] — 13-inferred-items.md #15.
+   ========================================================================== */
+const CellState = {
+  INTACT:  'INTACT',
+  CRACKED: 'CRACKED',   // partial break (§3.2) — scores differently in §6
+  HOLE:    'HOLE',      // full break, section opened
+  GONE:    'GONE',      // section removed entirely
+};
+
+class Building extends Entity {
+  constructor(leftX, cols, rows, paletteIndex, index) {
+    const B = CONFIG.buildings;
+    const w = cols * B.cellWidth;
+    const h = rows * B.cellHeight;
+    super(leftX + w / 2, CONFIG.world.groundY, w, h);
+
+    this.index = index;                 // stable id; Session 3 uses it for attribution
+    this.cols = cols;
+    this.rows = rows;
+    this.palette = B.palettes[paletteIndex % B.palettes.length];
+
+    // Grid of destructible cells. Nothing damages them until Session 3.
+    this.cells = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp });
+      this.cells.push(row);
+    }
+  }
+
+  /** The roof line the monster stands on. Same as Entity.top; named for clarity. */
+  get roofY() { return this.top; }
+
+  cellAt(col, row) {
+    if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return null;
+    return this.cells[row][col];
+  }
+
+  /** World-space rect of one cell. */
+  cellRect(col, row) {
+    const B = CONFIG.buildings;
+    return {
+      x: this.left + col * B.cellWidth,
+      y: this.top + row * B.cellHeight,
+      w: B.cellWidth,
+      h: B.cellHeight,
+    };
+  }
+
+  /** Grid coords for a world point, or null if the point is off the building. */
+  cellIndexAt(x, y) {
+    const B = CONFIG.buildings;
+    const col = Math.floor((x - this.left) / B.cellWidth);
+    const row = Math.floor((y - this.top) / B.cellHeight);
+    if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return null;
+    return { col, row };
+  }
+
+  /** How many px of [left,right] lie over this building's frontage. */
+  overlapWidth(left, right) {
+    return Math.min(right, this.right) - Math.max(left, this.left);
+  }
+
+  /** Deterministic lit/dark window pattern — no RNG, so reloads look the same. */
+  windowLit(col, row) {
+    return ((col * 7 + row * 13 + this.index * 5) % CONFIG.buildings.litWindowEvery) === 0;
+  }
+
+  update(dt, game) {}          // eslint-disable-line no-unused-vars
+
+  /* ---- 09-art-audio: placeholder window-grid art ---------------------- */
+  draw(ctx) {
+    const B = CONFIG.buildings;
+    const left = Math.round(this.left);
+    const top = Math.round(this.top);
+
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) this.drawCell(ctx, c, r, left, top);
+    }
+
+    // Roof cap sits *inside* the top of the building so the roof line the
+    // monster stands on is the true `top`, with no floating gap.
+    ctx.fillStyle = this.palette.roof;
+    ctx.fillRect(left - B.roofCapOverhang, top,
+      this.w + B.roofCapOverhang * 2, B.roofCapHeight);
+  }
+
+  drawCell(ctx, col, row, left, top) {
+    const B = CONFIG.buildings;
+    const p = this.palette;
+    const cell = this.cells[row][col];
+    if (cell.state === CellState.GONE) return;        // sky shows through
+
+    const x = left + col * B.cellWidth;
+    const y = top + row * B.cellHeight;
+    const w = B.cellWidth;
+    const h = B.cellHeight;
+
+    if (cell.state === CellState.HOLE) {
+      ctx.fillStyle = p.wallShade;
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = B.holeColor;
+      ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+      return;
+    }
+
+    ctx.fillStyle = p.wall;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = p.wallShade;
+    ctx.fillRect(x, y + h - 1, w, 1);               // floor seam
+    ctx.fillRect(x + w - 1, y, 1, h);               // column seam
+
+    ctx.fillStyle = this.windowLit(col, row) ? p.windowLit : p.windowDark;
+    ctx.fillRect(x + B.windowInsetX, y + B.windowInsetY,
+      w - B.windowInsetX * 2, h - B.windowInsetY * 2);
+
+    if (cell.state === CellState.CRACKED) {
+      ctx.fillStyle = B.crackColor;
+      ctx.fillRect(x + 3, y + 3, 2, h - 6);
+      ctx.fillRect(x + 3, y + Math.round(h / 2), w - 8, 2);
+    }
+  }
+}
+
+
+/* ==========================================================================
    01-monsters — Monster
    02-movement-destruction §3.1 — movement & traversal
 
@@ -430,10 +627,32 @@ class InputManager {
    art, punch-animation flavour and designated-victim id — nothing else. Every
    number below comes from CONFIG.monster, which has no per-type variants.
 
-   Stances: GROUND and AIR for now. CLING (building face) and ROOF arrive in
-   Session 2 — add them to this enum, don't add a second state machine.
+   Stances (§3.1): GROUND (street), AIR (jumping/falling), CLING (attached to
+   a building face) and ROOF (standing on a building top). One state machine —
+   `update` dispatches to exactly one per-stance handler per tick, and every
+   handler is responsible for leaving the monster at a legal position.
+
+   The transition graph, and why none of it can strand the monster:
+
+     GROUND --up (in front of a face)--> CLING      same y (groundY) on both sides
+     GROUND --jump-------------------->  AIR
+     CLING  --down at the street------>  GROUND     same y (groundY) on both sides
+     CLING  --up at the roof line----->  ROOF       same y (building.top) on both
+     CLING  --jump-------------------->  AIR        + short re-grab lockout
+     ROOF   --down-------------------->  CLING      same y (building.top)
+     ROOF   --walk past the edge------>  AIR
+     ROOF   --jump-------------------->  AIR
+     AIR    --up + face overlap------->  CLING      (jump-to-grab)
+     AIR    --falling across a roof--->  ROOF       swept test, no tunnelling
+     AIR    --reach the street-------->  GROUND
+
+   Every paired transition happens at an identical y on both sides, so no
+   transition ever moves the monster — nothing to clip through and nothing to
+   pop out of. The "same y" pairs are also why each one needs a directional
+   guard (vdir) to stop the two states flip-flopping on the boundary; see the
+   comments in updateCling / updateRoof.
    ========================================================================== */
-const Stance = { GROUND: 'GROUND', AIR: 'AIR' };
+const Stance = { GROUND: 'GROUND', AIR: 'AIR', CLING: 'CLING', ROOF: 'ROOF' };
 
 class Monster extends Entity {
   constructor(monsterTypeId, playerIndex, x) {
@@ -447,7 +666,15 @@ class Monster extends Entity {
     this.punchTimer = 0;             // counts down through the punch animation
     this.punchCooldown = 0;
     this.walkPhase = 0;              // 0..1 through the walk cycle
+    this.climbPhase = 0;             // 0..1 through the climb cycle
     this.animState = 'idle';
+
+    // Traversal (§3.1). `attached` is the Building this monster is on or
+    // clinging to; null in GROUND and AIR. grabIgnore/grabLockTimer stop a
+    // jump off a face from instantly re-grabbing that same face.
+    this.attached = null;
+    this.grabIgnore = null;
+    this.grabLockTimer = 0;
   }
 
   get isPunching() { return this.punchTimer > 0; }
@@ -485,7 +712,6 @@ class Monster extends Entity {
 
   update(dt, game) {
     const M = CONFIG.monster;
-    const W = CONFIG.world;
     const input = game.input.getPlayer(this.playerIndex);
 
     /* --- punch timers ------------------------------------------------- */
@@ -497,10 +723,15 @@ class Monster extends Entity {
         this.punchCooldown = M.punchCooldown;
       }
     }
+    if (this.grabLockTimer > 0) {
+      this.grabLockTimer = Math.max(0, this.grabLockTimer - dt);
+      if (this.grabLockTimer === 0) this.grabIgnore = null;
+    }
 
     /* --- direction (§3: 8-way stick; punch goes the way you're holding,
            straight ahead if neutral) --------------------------------------- */
     const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    const vdir = (input.down ? 1 : 0) - (input.up ? 1 : 0);   // +1 down, -1 up
 
     /* --- start a punch ------------------------------------------------- */
     if (input.punchPressed && !this.isPunching && this.punchCooldown <= 0) {
@@ -508,40 +739,23 @@ class Monster extends Entity {
       this.punchTimer = M.punchDuration;
     }
 
-    /* --- horizontal movement -------------------------------------------
-       [INFERRED] Punching roots the monster while it's on the ground; in the
-       air you keep your momentum. The GDD gives no rule for moving during a
-       punch. Logged in 13-inferred-items.md.                                */
-    const rooted = this.isPunching && this.stance === Stance.GROUND;
-    if (dir !== 0 && !rooted) this.facing = dir;
-    const speed = M.walkSpeed * (this.stance === Stance.AIR ? M.airControl : 1);
-    this.vx = rooted ? 0 : dir * speed;
+    /* [INFERRED] Punching roots the monster on any surface — street, face or
+       roof; airborne momentum is kept. Session 1 set this rule for the ground
+       and Session 2 extends it to cling/roof. 13-inferred-items.md #11.      */
+    const rooted = this.isPunching && this.stance !== Stance.AIR;
 
-    /* --- jump (§3.1) ---------------------------------------------------- */
-    if (input.jumpPressed && this.stance === Stance.GROUND && !this.isPunching) {
-      this.vy = -M.jumpSpeed;
-      this.stance = Stance.AIR;
+    /* --- one handler per stance; each leaves a legal position ----------- */
+    switch (this.stance) {
+      case Stance.GROUND: this.updateGround(dt, game, input, dir, rooted); break;
+      case Stance.AIR:    this.updateAir(dt, game, input, dir); break;
+      case Stance.CLING:  this.updateCling(dt, game, input, dir, vdir, rooted); break;
+      case Stance.ROOF:   this.updateRoof(dt, game, input, dir, rooted); break;
     }
-
-    /* --- integrate ------------------------------------------------------ */
-    this.vy += M.gravity * dt;
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    /* --- street contact & screen bounds ---------------------------------
-       Session 2 replaces the flat-ground test with building faces/roofs.    */
-    if (this.y >= W.groundY) {
-      this.y = W.groundY;
-      this.vy = 0;
-      this.stance = Stance.GROUND;
-    } else {
-      this.stance = Stance.AIR;
-    }
-    this.x = clamp(this.x, W.leftBound + this.w / 2, W.rightBound - this.w / 2);
 
     /* --- animation ------------------------------------------------------ */
     if (this.stance === Stance.AIR) this.animState = 'jump';
     else if (this.isPunching) this.animState = 'punch';
+    else if (this.stance === Stance.CLING) this.animState = 'climb';
     else if (this.vx !== 0) this.animState = 'walk';
     else this.animState = 'idle';
 
@@ -550,6 +764,206 @@ class Monster extends Entity {
     } else if (this.animState !== 'jump') {
       this.walkPhase = 0;
     }
+    if (this.stance === Stance.CLING && (this.vx !== 0 || this.vy !== 0)) {
+      this.climbPhase = (this.climbPhase + dt / M.climbCycleTime) % 1;
+    }
+  }
+
+  /** Keep the monster inside the playfield. Buildings never block the street. */
+  clampToStreet() {
+    const W = CONFIG.world;
+    this.x = clamp(this.x, W.leftBound + this.w / 2, W.rightBound - this.w / 2);
+  }
+
+  /** Leave the current surface for a jump/fall. */
+  detach(building, lockout) {
+    this.stance = Stance.AIR;
+    this.attached = null;
+    if (lockout) {
+      this.grabIgnore = building;
+      this.grabLockTimer = CONFIG.monster.grabLockout;
+    }
+  }
+
+  /**
+   * Attach to a building face (§3.1 "the monster clings to the wall").
+   * Pins the body flush inside the frontage and between the roof line and the
+   * street, so a cling position is always legal however it was entered.
+   */
+  attachToFace(building, feetY) {
+    this.attached = building;
+    this.stance = Stance.CLING;
+    this.vx = 0;
+    this.vy = 0;
+    this.x = clamp(this.x, building.left + this.w / 2, building.right - this.w / 2);
+    this.y = clamp(feetY, building.top, CONFIG.world.groundY);
+    this.grabIgnore = null;
+    this.grabLockTimer = 0;
+  }
+
+  /* ---- GROUND: walk the street, jump, or start a climb ----------------- */
+  updateGround(dt, game, input, dir, rooted) {
+    const M = CONFIG.monster;
+    this.y = CONFIG.world.groundY;
+    this.vy = 0;
+
+    if (dir !== 0 && !rooted) this.facing = dir;
+    this.vx = rooted ? 0 : dir * M.walkSpeed;
+    this.x += this.vx * dt;
+    this.clampToStreet();
+
+    if (input.jumpPressed && !this.isPunching) {
+      this.vy = -M.jumpSpeed;
+      this.detach(null, false);
+      return;
+    }
+
+    // §3.1: "when adjacent to a building face, up/down climbs it".
+    if (input.up && !this.isPunching) {
+      const target = game.faceTargetFor(this);
+      if (target) this.attachToFace(target, CONFIG.world.groundY);
+    }
+  }
+
+  /* ---- AIR: ballistic, with jump-to-grab and roof landing -------------- */
+  updateAir(dt, game, input, dir) {
+    const M = CONFIG.monster;
+    const W = CONFIG.world;
+
+    if (dir !== 0) this.facing = dir;
+    this.vx = dir * M.walkSpeed * M.airControl;
+    this.vy += M.gravity * dt;
+
+    const prevFeet = this.y;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.clampToStreet();
+
+    /* §3.1 jump-to-grab: "Jump toward a building and hold up to grab it."
+       Checked before the landing test so holding up near a roof edge grabs
+       the face rather than sliding past it.                                 */
+    if (input.up) {
+      const target = game.faceTargetFor(this, this.grabIgnore);
+      if (target) { this.attachToFace(target, this.y); return; }
+    }
+
+    /* Roof landing. Swept (prev→now crossed the roof line) so a fast fall
+       can never tunnel through a roof, and only while descending so a jump
+       from a roof passes back up through its own roof line cleanly.
+
+       A monster on the street can't land on a roof by jumping: every building
+       is taller than the jump apex (see CONFIG.buildings), so the feet never
+       get above a roof line to begin with. That's what keeps the street a
+       lane in front of the buildings instead of a set of ramps.             */
+    if (this.vy > 0) {
+      const roof = game.roofLandingAt(this.x, prevFeet, this.y);
+      if (roof) {
+        this.y = roof.top;
+        this.vy = 0;
+        this.stance = Stance.ROOF;
+        this.attached = roof;
+        return;
+      }
+    }
+
+    if (this.y >= W.groundY) {
+      this.y = W.groundY;
+      this.vy = 0;
+      this.stance = Stance.GROUND;
+      this.attached = null;
+    }
+  }
+
+  /* ---- CLING: on a building face -------------------------------------- */
+  updateCling(dt, game, input, dir, vdir, rooted) {
+    const M = CONFIG.monster;
+    const W = CONFIG.world;
+    const b = this.attached;
+
+    // Defensive: a building that stops existing (Session 3 collapse) drops
+    // whoever was on it rather than leaving them attached to nothing.
+    if (!b || !b.alive) { this.detach(null, false); return; }
+
+    if (input.jumpPressed && !this.isPunching) {
+      this.vy = -M.jumpSpeed;
+      this.vx = dir * M.walkSpeed * M.airControl;
+      this.detach(b, true);
+      return;
+    }
+
+    if (rooted) {
+      this.vx = 0;
+      this.vy = 0;
+    } else {
+      if (dir !== 0) this.facing = dir;
+      this.vx = dir * M.climbSideSpeed;
+      this.vy = vdir * M.climbSpeed;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+    }
+
+    // Pinned to the frontage: you can traverse the face sideways but never
+    // slide off its edge into thin air.
+    this.x = clamp(this.x, b.left + this.w / 2, b.right - this.w / 2);
+    this.clampToStreet();
+
+    /* Roof line. Same y as ROOF, so the guard is what separates them: only an
+       explicit "up" pulls you over the parapet. Coming the other way (ROOF +
+       down) hands over at this exact y with down held, so vdir > 0 and this
+       branch declines to hand it straight back. */
+    if (this.y <= b.top) {
+      this.y = b.top;
+      this.vy = 0;
+      if (vdir <= 0) { this.stance = Stance.ROOF; return; }
+    }
+
+    /* Street line. Mirror image: the same y as GROUND, and anything other
+       than actively climbing up drops you onto the street — so a stray tap of
+       up while walking past a building can't leave you stuck to its base. */
+    if (this.y >= W.groundY) {
+      this.y = W.groundY;
+      this.vy = 0;
+      if (vdir >= 0) {
+        this.stance = Stance.GROUND;
+        this.attached = null;
+      }
+    }
+  }
+
+  /* ---- ROOF: walking the top of a building (§3.1) ---------------------- */
+  updateRoof(dt, game, input, dir, rooted) {
+    const M = CONFIG.monster;
+    const b = this.attached;
+
+    if (!b || !b.alive) { this.detach(null, false); return; }
+
+    this.y = b.top;
+    this.vy = 0;
+
+    if (dir !== 0 && !rooted) this.facing = dir;
+    this.vx = rooted ? 0 : dir * M.walkSpeed;
+    this.x += this.vx * dt;
+    this.clampToStreet();
+
+    if (input.jumpPressed && !this.isPunching) {
+      this.vy = -M.jumpSpeed;
+      this.detach(null, false);
+      return;
+    }
+
+    /* Down at the roof line starts the climb back down the face, at the same
+       y — the CLING handler's vdir > 0 keeps it from bouncing straight back.
+       Goes through attachToFace because a roof lets the centre reach the very
+       edge, which is half a body further out than a face allows; without the
+       re-clamp the monster would hang off the side of the wall for a tick. */
+    if (input.down && !this.isPunching) {
+      this.attachToFace(b, this.y);
+      return;
+    }
+
+    // Walked off the edge. The centre leaving the frontage is the trigger, so
+    // the monster can stand half over the edge before it steps off.
+    if (this.x < b.left || this.x > b.right) this.detach(null, false);
   }
 
   /* ---- 09-art-audio: placeholder rectangle art ------------------------
@@ -576,7 +990,7 @@ class Monster extends Entity {
       ctx.fillRect(left, feet - A.shadowHeight / 2, w, A.shadowHeight);
     }
 
-    // Legs — swing while walking, tuck while airborne.
+    // Legs — swing while walking, tuck while airborne, alternate while climbing.
     let legOffsetA = 0, legOffsetB = 0, legLift = 0;
     if (this.animState === 'walk') {
       const swing = Math.sin(this.walkPhase * Math.PI * 2) * A.legSwingPx;
@@ -584,6 +998,8 @@ class Monster extends Entity {
       legOffsetB = -swing;
     } else if (this.animState === 'jump') {
       legLift = A.legTuckPx;
+    } else if (this.animState === 'climb') {
+      legLift = Math.abs(Math.sin(this.climbPhase * Math.PI * 2)) * A.legTuckPx;
     }
     ctx.fillStyle = this.type.trimColor;
     ctx.fillRect(left + 1 + legOffsetA, feet - legH - legLift, legW, legH);
@@ -592,6 +1008,18 @@ class Monster extends Entity {
     // Body.
     ctx.fillStyle = this.type.bodyColor;
     ctx.fillRect(left, bodyTop, w, bodyH);
+
+    // Climbing grip — both arms out on the wall, offset out of phase so the
+    // cling reads as a climb and not as a monster stuck to a poster.
+    if (this.stance === Stance.CLING && !this.isPunching) {
+      const armH = Math.max(2, Math.round(h * A.armThicknessFrac));
+      const reach = Math.round(CONFIG.monster.punchReach * 0.45);
+      const grip = Math.sin(this.climbPhase * Math.PI * 2) * A.legSwingPx;
+      const armY = feet - h + CONFIG.monster.punchBoxOffsetY;
+      ctx.fillStyle = this.type.headColor;
+      ctx.fillRect(left - reach, armY + grip, reach, armH);
+      ctx.fillRect(left + w, armY - grip, reach, armH);
+    }
 
     // Punching arm — reaches out in the facing direction.
     if (this.isPunching) {
@@ -699,11 +1127,12 @@ function drawDebug(game) {
     lines.push(
       monster.type.name + '  x ' + monster.x.toFixed(1) + '  y ' + monster.y.toFixed(1) +
       '  vx ' + monster.vx.toFixed(0) + '  vy ' + monster.vy.toFixed(0) +
-      '  ' + monster.stance + '/' + monster.animState + '  face ' + (monster.facing > 0 ? 'R' : 'L')
+      '  ' + monster.stance + '/' + monster.animState + '  face ' + (monster.facing > 0 ? 'R' : 'L') +
+      '  ON ' + (monster.attached ? 'BLDG' + monster.attached.index : '—')
     );
     lines.push(game.crossing.readout);
   }
-  lines.push('MOVE A/D  JUMP G  PUNCH F   (P2 arrows + . /)');
+  lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /)');
   for (let i = 0; i < lines.length; i++) {
     textAt(ctx, lines[i], D.x, D.y + i * D.lineHeight, D.fontSize, D.color);
   }
@@ -763,6 +1192,7 @@ class Game {
 
     this.input = new InputManager(CONFIG.players.slots);
     this.entities = new EntityManager();
+    this.buildings = [];          // query list for traversal; see spawnBuildings
 
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
@@ -818,13 +1248,78 @@ class Game {
 
   /** Spawn one monster per confirmed player (02 §3.1: they start on the street). */
   spawnMonsters() {
-    this.entities.clear();
     const active = this.activePlayers();
     for (let i = 0; i < active.length; i++) {
       const p = active[i];
       const x = CONFIG.monster.spawnX + i * CONFIG.monster.spawnSpacing;
       this.entities.add(new Monster(p.monsterTypeId, p.index, x));
     }
+  }
+
+  /**
+   * 02 §3.2 — lay the day's buildings across the street. Hardcoded from
+   * CONFIG.buildings.dayLayout; Session 9 swaps this for LevelData.
+   * `this.buildings` is the query list traversal reads every tick — cheaper
+   * than filtering the whole entity list per monster per stance check.
+   */
+  spawnBuildings() {
+    const B = CONFIG.buildings;
+    this.buildings = [];
+    let x = B.startX;
+    for (let i = 0; i < B.dayLayout.length; i++) {
+      const spec = B.dayLayout[i];
+      const building = new Building(x, spec.cols, spec.rows, spec.palette, i);
+      this.buildings.push(building);
+      this.entities.add(building);
+      x += spec.cols * B.cellWidth + spec.gapAfter;
+    }
+  }
+
+  /** Buildings first so monsters draw in front of them (the street is a lane). */
+  startDay() {
+    this.entities.clear();
+    this.spawnBuildings();
+    this.spawnMonsters();
+  }
+
+  /**
+   * 10-architecture §11.3 — the spatial queries buildings needed, and no more.
+   * Linear scans over ~5 buildings; a grid would be premature.
+   */
+
+  /**
+   * The building face `monster` could grab right now: enough of its body is
+   * over the frontage, and its feet are below that building's roof line (at
+   * or above the roof line it belongs on the roof, not on the face).
+   * Returns the best overlap so a monster straddling two buildings grabs the
+   * one it is most over. `ignore` skips a face just jumped off.
+   */
+  faceTargetFor(monster, ignore) {
+    let best = null;
+    let bestOverlap = CONFIG.monster.grabMinOverlap;
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (!b.alive || b === ignore) continue;
+      if (monster.y <= b.top) continue;
+      const overlap = b.overlapWidth(monster.left, monster.right);
+      if (overlap >= bestOverlap) { best = b; bestOverlap = overlap; }
+    }
+    return best;
+  }
+
+  /**
+   * The roof a falling monster crossed this step, if any. Swept against the
+   * feet's previous and current y so no fall speed can tunnel through a roof.
+   * Buildings never overlap horizontally, so at most one can match.
+   */
+  roofLandingAt(x, prevFeetY, feetY) {
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (!b.alive) continue;
+      if (x < b.left || x > b.right) continue;
+      if (prevFeetY <= b.top && feetY >= b.top) return b;
+    }
+    return null;
   }
 }
 
@@ -943,7 +1438,7 @@ Game.prototype.handlers = {
 
   [GameState.PLAY]: {
     enter(game) {
-      game.spawnMonsters();
+      game.startDay();
       game.crossing = { running: false, time: 0, last: null, readout: '' };
     },
     update(game, dt) {
@@ -1047,7 +1542,10 @@ function boot() {
   requestAnimationFrame(frame);
 
   // Debug handle — inspect state from the console, and drive headless tests.
-  window.RAMPAGE = { CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance };
+  window.RAMPAGE = {
+    CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
+    Building, CellState,
+  };
   return game;
 }
 

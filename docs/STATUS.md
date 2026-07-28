@@ -1,7 +1,7 @@
 # Rampage Clone — STATUS
 
 **Phase:** 1 (faithful replica)
-**Last updated:** _(date)_ — end of Session 0
+**Last updated:** 2026-07-28 — end of Session 0
 **Last session:** Session 0 — Repo scaffold & design-doc split
 **Next session:** Session 1 — Core skeleton (loop, state machine, one controllable monster)
 
@@ -74,7 +74,7 @@ Anything implemented from an inference rather than a confirmed source gets logge
 
 | # | Session | Date | Outcome |
 |---|---|---|---|
-| 0 | Repo scaffold & design-doc split | | ✅ |
+| 0 | Repo scaffold & design-doc split | 2026-07-28 | ✅ |
 
 ---
 

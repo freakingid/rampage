@@ -57,6 +57,9 @@
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
      03-eating-health ................ energy bar, applyDamage/heal, defeat &
                                        walk-off, knock-off — inside Monster §4.1
+     07-multiplayer .................. monster-vs-monster punch, cannibalism —
+                                       inside Monster (§8.2); join-in-progress
+                                       and the shared roster — inside Game (§8.1)
      09-art-audio .................... placeholder rectangle art
      08-hud-ui ....................... title, character select, HUD strip
      00-core-loop .................... game state machine                §11.2
@@ -100,6 +103,17 @@
    of both threats going. Session 5's `HumanRole.WINDOW_SOLDIER` placeholder
    is removed — the window Guardsman is an `Enemy` subclass instead, per
    10-architecture.md §11.3.
+   Session 10 scope: local multiplayer (07-multiplayer §8). A second player
+   on its own key set, sharing one screen and one camera; monster-vs-monster
+   punches that deal real damage and force the target to drop a held victim;
+   competition for every pickup (first punch wins, which already fell out of
+   the per-entity consume guards); cannibalism of a defeated rival's human
+   form for points and health; and join-in-progress for any slot that isn't
+   in the run yet. Nothing in this session counts to two: `activeAtStart` is
+   the only number that decides how many players a run opens with, and every
+   system that had a "the monster" assumption left in it (the debug readout,
+   the crossing timer, the continue window's "the monster walked off" exit)
+   became "each monster" instead of gaining a second branch.
    ========================================================================== */
 
 
@@ -211,8 +225,24 @@ const CONFIG = {
       lightning: 20,          // Session 7 — lightning cloud bolt, wired this session
                               // [INFERRED — new this session, 13-inferred-items.md #36]
       underwaterPerSecond: 8, // Session 9 — river/pier levels, not called yet
-      monsterPunch: 8,        // Session 10 — monster-vs-monster, not called yet
+      monsterPunch: 8,        // Session 10 — 07-multiplayer §8.2 "monsters can punch
+                              // each other, dealing real damage", wired this session.
+                              // At maxEnergy 100 that is ~13 connecting punches to
+                              // down a full-health rival — deliberately slower than
+                              // any military source, so griefing another player is a
+                              // real investment rather than a quick kill. [INFERRED
+                              // — §8.2 confirms "real damage", never an amount.]
     },
+
+    /* -- 07-multiplayer §8.2 cannibalism ---------------------------------
+       "When a monster's energy is depleted and it reverts to human form,
+       another player can eat that human before it walks off screen (points
+       + heal)." The points side has a CONFIG.scoring row; this is the heal
+       side. [INFERRED — §8.2 confirms a heal, never an amount. Set above
+       CONFIG.humans.civilianHeal (15) because a whole rival monster is a
+       bigger meal than a fleeing pedestrian, and because the act costs the
+       eater a trip across the street into someone else's walk-off.]        */
+    cannibalHeal: 25,
 
     /* -- Knockback (§5.1: tank/police "large knockback ... can knock a
        monster off a building or across the screen") — new in Session 7.
@@ -757,6 +787,13 @@ const CONFIG = {
     nationalGuardsman: 50,
     paratrooper: 50,
     megaVitaminBonus: 5000,            // §7.2 milestone — see Game.awardMegaVitamin
+    /* 07-multiplayer §8.2 cannibalism, new in Session 10. NOT a §6 row —
+       the scoring table has no entry for eating a defeated monster's human
+       form, because §6 is a single-player-shaped table. Set to the same
+       value as `eatCivilian` rather than inventing a bigger number: what
+       gets eaten *is* a human figure, and §6 prices every human at 500.
+       [INFERRED — 13-inferred-items.md #48.]                              */
+    eatDefeatedMonster: 500,
   },
 
   /* ---- Days, cities and progression (06-levels-progression.md §7) -------
@@ -1044,15 +1081,31 @@ const CONFIG = {
     shadowColor: 'rgba(0,0,0,0.35)',
     shadowHeight: 4,
     humanColor: '#d8b48c',    // 03-eating-health §4.1 revert-to-human placeholder
+    /* The defeated monster's human form is drawn smaller than the monster
+       (Monster.drawHuman). Session 10 promoted these two out of that draw
+       method because they stopped being art-only: 07-multiplayer §8.2's
+       cannibalism punch tests against the figure that is actually on
+       screen (Monster.humanFormRect), not against the monster-sized entity
+       box it inherited.                                                    */
+    humanFormWidthFrac: 0.45,
+    humanFormHeightFrac: 0.55,
   },
 
-  /* ---- Players & input (10-architecture.md §11.3) ----------------------
-     Built for up to 3 players from day one. Session 1 spawns P1 only;
-     Session 10 raises `activeAtStart`. Key maps for all three slots are
-     data, not code — adding a player must never need a code change.        */
+  /* ---- Players & input (10-architecture.md §11.3, 07-multiplayer §8) ---
+     Built for up to 3 players from day one. Key maps for all three slots
+     are data, not code — adding a player must never need a code change.
+
+     `activeAtStart` is how many slots are already in the run when the
+     character select opens. Session 10 raised it 1 → 2 for §8.1's "local
+     2-player on one keyboard"; raising it to 3 is the *entire* change
+     needed to play three-handed (verified — see docs/STATUS.md). It is not
+     a cap on anything: §8.1's "players can join at any time" is a separate
+     path (Game.tryJoinPlayers) that works for every slot up to
+     `maxPlayers`, so at the shipped value of 2 the third slot is the one
+     that joins in progress, and at 1 the second slot does.                 */
   players: {
     maxPlayers: 3,
-    activeAtStart: 1,
+    activeAtStart: 2,
     slots: [
       {
         label: 'P1',
@@ -3142,6 +3195,21 @@ class Monster extends Entity {
     const streetHuman = game.humanTargetFor(this);
     if (streetHuman) return this.interactWithHuman(streetHuman, game);
 
+    /* 07-multiplayer §8.2 — a rival monster in the fist's way, checked in
+       the same street-first band as everything else, immediately *after*
+       humans rather than before them.
+       [INFERRED — 13-inferred-items.md #8.] The order is load-bearing, and
+       testing is what showed it: two monsters racing for the same civilian
+       end up within a punch's reach of each other, which is exactly the
+       moment §8.2's "whoever grabs it gets it" is supposed to be decided.
+       Checking monsters first made the rival absorb every punch and left
+       the contested food unreachable for both players — the competition
+       mechanic cancelling itself out. Food first also costs the puncher
+       nothing: it heals either way, and the rival is still there to hit on
+       the next swing. */
+    const rival = game.monsterTargetFor(this);
+    if (rival) return this.interactWithMonster(rival, game);
+
     const streetEnemy = game.enemyTargetFor(this);
     if (streetEnemy) {
       const pts = streetEnemy.scorePoints;
@@ -3202,6 +3270,72 @@ class Monster extends Entity {
     }
     human.consume(this, game);
     return 'eat';
+  }
+
+  /* ---- 07-multiplayer §8.2 — monster vs. monster ----------------------
+     Three documented interactions between two players' monsters, all of
+     them resolved from one connecting punch:
+
+       - a live rival takes **real damage** to its energy bar [FAITHFUL],
+       - and **drops whatever it is holding** [INFERRED — see below],
+       - a *defeated* rival's human form is **eaten** for points and health
+         before it finishes walking off [FAITHFUL].
+
+     Which of the two branches a punch takes is decided by nothing more
+     than whether the target is already defeated, so there is no separate
+     "cannibalize" input, stance or targeting rule to get out of sync with
+     the punch that damages.                                                */
+
+  /**
+   * §8.2 — a punch connected with another player's monster.
+   *
+   * [INFERRED — 13-inferred-items.md #8] §8.2 says "punching a monster can
+   * make it drop what it's holding / interrupt a grab" and flags it as
+   * unconfirmed; the design doc's own instruction is to implement
+   * drop-on-hit as the faithful-feeling default. The drop reuses
+   * Human.struggleFree outright rather than inventing a second release
+   * path, which means a punched-out victim behaves exactly like one that
+   * ran out its own hold timer: it lands on the street, flees, and latches
+   * `grabbable = false`, so it can only ever be eaten from then on — by
+   * either player. Nothing is taken back from the holder's score; §6's
+   * hold bonus is paid at the moment of the grab (#41) and a rival's punch
+   * arriving afterwards can't retroactively unearn it.
+   *
+   * Also inferred, by omission: a monster punch deals damage only — no
+   * knockback. §5.1 gives knockback to the tank/police shell specifically
+   * and §8.2 asks only for "real damage", so borrowing the shell's shove
+   * would be inventing a mechanic rather than implementing one.
+   */
+  interactWithMonster(other, game) {
+    if (!other.alive) return null;
+
+    if (other.defeated) {
+      // §8.2 cannibalism. The human form despawns the moment it is eaten,
+      // which also ends that player's continue window early — see
+      // Game.updateContinueWindows. That consequence is the point of the
+      // mechanic, not a side effect of it.
+      other.alive = false;
+      this.heal(CONFIG.health.cannibalHeal, 'CANNIBALISM');
+      game.scoreSystem.award(this, CONFIG.scoring.eatDefeatedMonster, 'eatDefeatedMonster');
+      return 'cannibalize';
+    }
+
+    other.applyDamage(CONFIG.health.damage.monsterPunch, 'MONSTER_PUNCH');
+    other.releaseHolding();          // §8.2's inferred drop-on-hit
+    return 'monsterPunch';
+  }
+
+  /**
+   * §8.2 — the box a cannibalism punch has to overlap: the human figure
+   * Monster.drawHuman actually draws, not the monster-sized entity box it
+   * inherited from before it was defeated. Without this a walk-off would
+   * be a much fatter target than it looks.
+   */
+  humanFormRect() {
+    const A = CONFIG.art;
+    const w = this.w * A.humanFormWidthFrac;
+    const h = this.h * A.humanFormHeightFrac;
+    return { x: this.x - w / 2, y: this.y - h, w: w, h: h };
   }
 
   /**
@@ -3736,8 +3870,8 @@ class Monster extends Entity {
     const A = CONFIG.art;
     const cx = Math.round(this.renderX(alpha));
     const feet = Math.round(this.renderY(alpha));
-    const w = Math.round(this.w * 0.45);
-    const h = Math.round(this.h * 0.55);
+    const w = Math.round(this.w * A.humanFormWidthFrac);
+    const h = Math.round(this.h * A.humanFormHeightFrac);
     const headH = Math.round(h * 0.35);
 
     ctx.fillStyle = A.shadowColor;
@@ -4228,6 +4362,21 @@ function blinkOn(time) {
   return (time % CONFIG.ui.blinkPeriod) < CONFIG.ui.blinkPeriod / 2;
 }
 
+/* A KeyboardEvent.code turned into something printable on the HUD. Not a
+   tunable — purely how a key map (CONFIG.players.slots, which is the
+   tunable) reads on screen. Anything not listed falls back to stripping the
+   'Key'/'Digit' prefix, which covers every letter and number. Shared by the
+   join hint and §7.4's continue prompt so the two never disagree about what
+   a player's keys are called. */
+const KEY_LABELS = {
+  Period: '.', Slash: '/', Comma: ',', Semicolon: ';', Quote: "'",
+  Space: 'SPACE', Enter: 'ENTER', ShiftLeft: 'LSHIFT', ShiftRight: 'RSHIFT',
+  ArrowLeft: 'LEFT', ArrowRight: 'RIGHT', ArrowUp: 'UP', ArrowDown: 'DOWN',
+};
+function keyLabel(code) {
+  return KEY_LABELS[code] || code.replace(/^(Key|Digit)/, '');
+}
+
 function drawHudStrip(game) {
   const ctx = game.ctx;
   const U = CONFIG.ui;
@@ -4238,12 +4387,23 @@ function drawHudStrip(game) {
     const player = game.players[i];
     if (player && player.joined) {
       const type = CONFIG.monsterTypes[player.monsterTypeId];
-      const monster = monsters.find(function (m) { return m.playerIndex === player.index; });
+      // `alive` matters here now: a player who just continued (or whose
+      // human form was just eaten) has a despawned monster still sitting in
+      // the entity list until the end-of-tick sweep, and picking that one
+      // would flash an empty bar over a perfectly healthy monster.
+      const monster = monsters.find(function (m) { return m.alive && m.playerIndex === player.index; });
       textAt(ctx, player.label + '  ' + type.name, x, U.hudTop, U.bodyFontSize, U.textColor);
       textAt(ctx, String(player.score).padStart(6, '0'), x, U.hudTop + U.hudLineHeight, U.bodyFontSize, U.accentColor);
       drawHudEnergyBar(ctx, x, U.hudTop + U.hudLineHeight * 2, monster);
     } else {
-      textAt(ctx, CONFIG.players.slots[i].label + '  ----', x, U.hudTop, U.bodyFontSize, U.dimTextColor);
+      /* 07-multiplayer §8.1 — the reserved column now also advertises how
+         to buy into it, since "players can join at any time" is invisible
+         otherwise. Still name-only and dim: no score, no bar, and the
+         column keeps exactly the space it always did. */
+      const slot = CONFIG.players.slots[i];
+      textAt(ctx, slot.label + '  ----', x, U.hudTop, U.bodyFontSize, U.dimTextColor);
+      textAt(ctx, 'JOIN: ' + keyLabel(slot.keys.start[0]), x, U.hudTop + U.hudLineHeight,
+        U.smallFontSize, U.dimTextColor);
     }
   }
 }
@@ -4364,7 +4524,7 @@ function drawContinuePrompt(game) {
   let y = L.continuePromptY;
   for (const p of waiting) {
     const keys = CONFIG.players.slots[p.index].keys;
-    const label = p.label + ' CONTINUE?  PRESS ' + keys.punch[0].replace('Key', '') +
+    const label = p.label + ' CONTINUE?  PRESS ' + keyLabel(keys.punch[0]) +
       '  —  ' + Math.ceil(p.continueTimer);
     if (blinkOn(game.simTime)) {
       textAt(ctx, label, V.width / 2, y, U.headingFontSize, U.continueColor, 'center');
@@ -4421,10 +4581,16 @@ function drawDebug(game) {
       '  DIFF ' + game.difficultyScalar().toFixed(2) +
       (d.milestone ? '  ★MILESTONE' : ''));
   }
-  const monster = game.entities.ofType(Monster)[0];
-  if (monster) {
+  /* One line per live monster, not just the first — Session 10's whole
+     point is that there is more than one. Sorted by player slot so a given
+     player's line doesn't move around as monsters spawn and despawn. */
+  const monsters = game.entities.ofType(Monster).slice().sort(function (a, b) {
+    return a.playerIndex - b.playerIndex;
+  });
+  for (const monster of monsters) {
     lines.push(
-      monster.type.name + '  x ' + monster.x.toFixed(1) + '  y ' + monster.y.toFixed(1) +
+      game.players[monster.playerIndex].label + ' ' + monster.type.name +
+      '  x ' + monster.x.toFixed(1) + '  y ' + monster.y.toFixed(1) +
       '  vx ' + monster.vx.toFixed(0) + '  vy ' + monster.vy.toFixed(0) +
       '  ' + monster.stance + '/' + monster.animState + '  face ' + (monster.facing > 0 ? 'R' : 'L') +
       '  ON ' + (monster.attached ? 'BLDG' + monster.attached.index : '—') +
@@ -4435,8 +4601,8 @@ function drawDebug(game) {
       (monster.holding ? '  HOLDING ' + monster.holding.typeId +
         ' (' + monster.holding.holdTimer.toFixed(1) + 's)' : '')
     );
-    lines.push(game.crossing.readout);
   }
+  if (monsters.length) lines.push(game.crossing.readout);
   // Session 5 readout: how many civilians/victims are in play and where.
   const humans = game.entities.ofType(Human);
   if (humans.length) {
@@ -4477,6 +4643,14 @@ function drawDebug(game) {
   if (active.length) {
     lines.push('SCORE ' + active.map(function (p) { return p.label + ':' + p.score; }).join('  '));
   }
+  // Session 10 readout: the roster itself — who is in the run, on which
+  // monster, and how they got there (character select vs. joined mid-day).
+  lines.push('ROSTER ' + game.players.map(function (p) {
+    if (!p.joined) return p.label + ':—';
+    return p.label + ':' + CONFIG.monsterTypes[p.monsterTypeId].initial +
+      (p.outOfPlay ? '(OUT)' : '') +
+      (p.joinedOnDay === null ? '' : '(JOINED D' + (p.joinedOnDay + 1) + ')');
+  }).join('  '));
   // Session 3 readout: per-building structure %, state, and who owns the
   // collapse — still the quickest way to confirm §6's attribution rule.
   if (game.buildings.length) {
@@ -4503,7 +4677,7 @@ function drawDebug(game) {
       }).join(' ') || '—') +
       '  OUT ' + (out.map(function (p) { return p.label; }).join(' ') || '—'));
   }
-  lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /)   ' +
+  lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /   P3 IJKL + O/P)   ' +
     'DAY [ ]  MILESTONE \\');
   for (let i = 0; i < lines.length; i++) {
     textAt(ctx, lines[i], D.x, D.y + i * D.lineHeight, D.fontSize, D.color);
@@ -4517,7 +4691,11 @@ function drawDebug(game) {
  */
 function updateCrossingTimer(game, dt) {
   const c = game.crossing;
-  const monster = game.entities.ofType(Monster)[0];
+  // Explicitly P1's monster. It used to be "the first monster in the entity
+  // list", which was the same thing right up until Session 10 put a second
+  // one on the street — and would then have silently switched to whichever
+  // monster happened to be listed first.
+  const monster = game.monsterFor(0);
   if (!monster) return;
   const W = CONFIG.world;
   const atLeft = monster.x <= W.leftBound + monster.w / 2 + 0.5;
@@ -4633,6 +4811,10 @@ class Game {
         awaitingContinue: false,
         continueTimer: 0,
         continues: 0,
+        /* 07-multiplayer §8.1 — the day index this slot bought in on, or
+           null for one that was in the run from the character select.
+           Readout only (the debug strip); nothing branches on it. */
+        joinedOnDay: null,
       });
     }
 
@@ -4704,16 +4886,101 @@ class Game {
 
   /** Spawn one monster per in-play player (02 §3.1: they start on the street). */
   spawnMonsters() {
-    const active = this.playersInPlay();
-    for (let i = 0; i < active.length; i++) {
-      const p = active[i];
-      const x = CONFIG.monster.spawnX + i * CONFIG.monster.spawnSpacing;
-      const monster = new Monster(p.monsterTypeId, p.index, x);
+    for (const p of this.playersInPlay()) {
+      const monster = new Monster(p.monsterTypeId, p.index, this.spawnXFor(p));
       // §7.1 — health carries between days; the mega-vitamin is what refills
       // it. See the `energy` note on the player record.
       monster.energy = clamp(p.energy, 1, CONFIG.health.maxEnergy);
       this.entities.add(monster);
     }
+  }
+
+  /**
+   * Where a given player's monster comes onto the street — at day start, on
+   * a continue, or on a mid-day join. Spaced by seat *among the players
+   * actually in play*, so two monsters never spawn on top of each other and
+   * the spacing doesn't leave a gap where a knocked-out player used to be.
+   * One helper rather than the same arithmetic in three places, which is
+   * what Session 10 found the single-player version of: nothing before this
+   * session ever had a second monster to collide with.
+   */
+  spawnXFor(player) {
+    const seat = Math.max(0, this.playersInPlay().indexOf(player));
+    return CONFIG.monster.spawnX + seat * CONFIG.monster.spawnSpacing;
+  }
+
+  /* ---- 07-multiplayer §8.1 — join in progress -------------------------
+     "Players can join at any time (the 'join the action' jump-button
+     start)." Any slot that isn't in the run yet can buy in with its own
+     start keys, at the character select or mid-day, up to
+     CONFIG.players.maxPlayers. Nothing here counts to two.
+
+     [INFERRED — 13-inferred-items.md #49] Deliberately *not* a way back in
+     for a player who is `outOfPlay`: §7.4's continue window is the
+     documented route back from a defeat, and Session 9 decided a window
+     that closes puts that player out for the rest of the run. Letting the
+     same start press bypass that would make the continue window mean
+     nothing. So join-in-progress covers slots that never joined, and the
+     continue window covers slots that did.                                */
+
+  /** Called every tick in the states a player can buy into. */
+  tryJoinPlayers() {
+    for (const p of this.players) {
+      if (p.joined) continue;
+      if (this.input.getPlayer(p.index).startPressed) this.joinPlayer(p);
+    }
+  }
+
+  /**
+   * §8.1 — put a slot into the run. Mid-day (PLAY) that also means a
+   * monster on the street immediately, at full energy, with a score of
+   * zero — a joiner starts a run's worth of scoring from scratch rather
+   * than inheriting anything from the players already out there. At the
+   * character select there's no day yet, so the joiner just gets a cursor
+   * and picks like everybody else.
+   */
+  joinPlayer(player) {
+    if (player.joined) return null;
+    player.joined = true;
+    player.monsterTypeId = this.pickMonsterTypeFor(player);
+    player.cursor = MONSTER_TYPE_IDS.indexOf(player.monsterTypeId);
+    player.score = 0;
+    player.lastScoreEvent = null;
+    player.energy = CONFIG.health.maxEnergy;
+    player.outOfPlay = false;
+    player.awaitingContinue = false;
+    player.continueTimer = 0;
+    player.continues = 0;
+    player.joinedOnDay = this.dayIndex;
+
+    if (this.state === GameState.CHARACTER_SELECT) {
+      player.confirmed = false;      // still has to pick, same as everyone else
+      return null;
+    }
+    player.confirmed = true;
+    if (this.state !== GameState.PLAY) return null;
+    const monster = new Monster(player.monsterTypeId, player.index, this.spawnXFor(player));
+    this.entities.add(monster);
+    return monster;
+  }
+
+  /**
+   * §8.1 — "any player may pick any of the three monsters at select," but a
+   * mid-day joiner never sees the select screen, so something has to
+   * choose. Takes this slot's default type if no one already in the run has
+   * it, otherwise the first free one. [INFERRED — the arcade's cabinet had
+   * one monster per control panel and no such collision to resolve. It
+   * matters mechanically rather than cosmetically: 01-monsters §2.3 keys
+   * each monster's designated victim off its type, so two players on the
+   * same type would be hunting the same victim.]
+   */
+  pickMonsterTypeFor(player) {
+    const taken = this.players
+      .filter(function (p) { return p.joined && p !== player; })
+      .map(function (p) { return p.monsterTypeId; });
+    if (taken.indexOf(player.monsterTypeId) === -1) return player.monsterTypeId;
+    for (const id of MONSTER_TYPE_IDS) if (taken.indexOf(id) === -1) return id;
+    return player.monsterTypeId;   // more players than types — can't happen at maxPlayers 3
   }
 
   /**
@@ -4876,7 +5143,23 @@ class Game {
     for (const p of this.playersInPlay()) {
       const monster = this.monsterFor(p.index);
 
-      if (monster && monster.defeated) {
+      /* No monster at all — the window is over however it ended. Session 9
+         reached this state exactly one way (the walk-off finished and the
+         human despawned) and wrote the test as "was awaiting, now gone".
+         07-multiplayer §8.2 adds a second way in: a rival can *eat* the
+         human form, possibly on the very tick it appeared, before a window
+         was ever opened. Both are the same outcome — that player has
+         nothing on the street and no way back into the day — so this is
+         one branch on "is there a monster", not a walk-off test plus a
+         cannibalism special case. */
+      if (!monster) {
+        p.awaitingContinue = false;
+        p.continueTimer = 0;
+        p.outOfPlay = true;
+        continue;
+      }
+
+      if (monster.defeated) {
         p.awaitingContinue = true;
         // Time left before the human figure is fully off screen — exactly the
         // walk-off geometry Monster.updateDefeated despawns on.
@@ -4884,11 +5167,6 @@ class Game {
         p.continueTimer = Math.max(0, Math.abs(edge - monster.x) / CONFIG.health.walkOffSpeed);
         const input = this.input.getPlayer(p.index);
         if (input.punchPressed || input.jumpPressed || input.startPressed) this.continuePlayer(p);
-      } else if (p.awaitingContinue) {
-        // The monster despawned without a continue — window closed.
-        p.awaitingContinue = false;
-        p.continueTimer = 0;
-        p.outOfPlay = true;
       }
     }
   }
@@ -4919,9 +5197,7 @@ class Game {
     player.continueTimer = 0;
     player.energy = CONFIG.health.maxEnergy;
     player.continues++;
-    const seat = this.playersInPlay().indexOf(player);
-    const x = CONFIG.monster.spawnX + Math.max(0, seat) * CONFIG.monster.spawnSpacing;
-    const monster = new Monster(player.monsterTypeId, player.index, x);
+    const monster = new Monster(player.monsterTypeId, player.index, this.spawnXFor(player));
     this.entities.add(monster);
     return monster;
   }
@@ -5366,6 +5642,39 @@ class Game {
   }
 
   /**
+   * 07-multiplayer §8.2 — the *other* player's monster a punch connects
+   * with, if any. Same shape as humanTargetFor/enemyTargetFor: tested
+   * against `getPunchBox()` (the fist the art draws), best overlap wins so
+   * a punch thrown into a three-monster pile-up resolves against exactly
+   * one of them.
+   *
+   * A defeated rival is deliberately still a candidate — that walk-off is
+   * §8.2's cannibalism target — but it is matched against the smaller
+   * human figure it has become (`humanFormRect`) rather than the monster
+   * box it inherited. Monster.interactWithMonster decides which of the two
+   * §8.2 outcomes the hit produces.
+   */
+  monsterTargetFor(monster) {
+    const box = monster.getPunchBox();
+    if (!box) return null;
+    let best = null, bestArea = 0;
+    const monsters = this.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m === monster || !m.alive) continue;
+      const r = m.defeated
+        ? m.humanFormRect()
+        : { x: m.left, y: m.top, w: m.w, h: m.h };
+      const ox = Math.min(box.x + box.w, r.x + r.w) - Math.max(box.x, r.x);
+      const oy = Math.min(box.y + box.h, r.y + r.h) - Math.max(box.y, r.y);
+      if (ox <= 0 || oy <= 0) continue;
+      const area = ox * oy;
+      if (area > bestArea) { best = m; bestArea = area; }
+    }
+    return best;
+  }
+
+  /**
    * 04-military-hazards §5.1 — the free-roaming (not window-anchored) Enemy
    * a punch connects with, if any: a street Guardsman mid-run/plant, a
    * helicopter dipped low enough during its strafing dive, a tank/police
@@ -5480,6 +5789,19 @@ Game.prototype.handlers = {
 
   /* 08-hud-ui: minimal title / attract screen for Phase 1. */
   [GameState.TITLE]: {
+    /* 07-multiplayer §8.1 — the attract screen is where the roster goes
+       back to its starting size. Without this, a slot that joined in
+       progress during one run would still be joined when the next run's
+       character select opened, which would silently make `activeAtStart`
+       mean "at least" rather than "exactly". */
+    enter(game) {
+      for (const p of game.players) {
+        p.joined = p.index < CONFIG.players.activeAtStart;
+        p.confirmed = false;
+        p.outOfPlay = false;
+        p.joinedOnDay = null;
+      }
+    },
     update(game) {
       if (game.input.anyPressed('start')) game.setState(GameState.CHARACTER_SELECT);
     },
@@ -5490,7 +5812,13 @@ Game.prototype.handlers = {
       textAt(ctx, 'RAMPAGE', V.width / 2, L.titleY, U.titleFontSize, U.accentColor, 'center');
       textAt(ctx, 'PHASE 1 — FAITHFUL REPLICA', V.width / 2, L.subtitleY, U.bodyFontSize, U.textColor, 'center');
       if (blinkOn(game.stateTime)) {
-        textAt(ctx, 'PRESS START  —  P1: F / G / ENTER', V.width / 2, L.startPromptY,
+        // 07-multiplayer §8.1 — built from CONFIG.players.slots rather than
+        // spelled out, so raising activeAtStart (or editing a key map) never
+        // leaves the title screen lying about the controls.
+        const prompt = CONFIG.players.slots.slice(0, CONFIG.players.activeAtStart)
+          .map(function (s) { return s.label + ': ' + s.keys.start.map(keyLabel).join('/'); })
+          .join('   ');
+        textAt(ctx, 'PRESS START  —  ' + prompt, V.width / 2, L.startPromptY,
           U.headingFontSize, U.textColor, 'center');
       }
       textAt(ctx, 'GEORGE   LIZZIE   RALPH', V.width / 2, L.rosterY, U.bodyFontSize, U.dimTextColor, 'center');
@@ -5516,7 +5844,16 @@ Game.prototype.handlers = {
         p.monsterTypeId = MONSTER_TYPE_IDS[p.cursor];
         if (input.punchPressed || input.jumpPressed) p.confirmed = true;
       }
-      const allReady = active.length > 0 && active.every(function (p) { return p.confirmed; });
+      /* 07-multiplayer §8.1 — a slot that isn't in the run can buy in here
+         too, not only mid-day. Run *after* the pick loop above, never
+         before: for every slot the join keys and the confirm keys are the
+         same physical keys, so joining first would let one press both join
+         and confirm, skipping the pick entirely. */
+      game.tryJoinPlayers();
+      // Re-read the roster: a slot that just joined is unconfirmed, and the
+      // day must not start without it.
+      const ready = game.activePlayers();
+      const allReady = ready.length > 0 && ready.every(function (p) { return p.confirmed; });
       if (allReady) {
         // 06 §7 — a confirmed roster is the start of a run: scores, carried
         // health and the day index all reset here, once, before day 1 loads.
@@ -5567,7 +5904,9 @@ Game.prototype.handlers = {
       }
 
       if (blinkOn(game.stateTime)) {
-        textAt(ctx, 'A / D TO CHOOSE   F OR G TO CONFIRM', V.width / 2, L.selectHintY,
+        // §8.1 — worded per-action rather than per-key: each slot uses its
+        // own map, so naming P1's keys here would be wrong for P2 and P3.
+        textAt(ctx, 'LEFT / RIGHT TO CHOOSE   PUNCH OR JUMP TO CONFIRM', V.width / 2, L.selectHintY,
           U.bodyFontSize, U.textColor, 'center');
       }
       drawHudStrip(game);
@@ -5602,6 +5941,7 @@ Game.prototype.handlers = {
       game.entities.update(dt, game);
       game.updateHumanSpawning(dt);
       game.updateSpawnDirector(dt);
+      game.tryJoinPlayers();          // 07-multiplayer §8.1 — join in progress
       game.updateContinueWindows(dt);
       game.updateDebugDayKeys();
       updateCrossingTimer(game, dt);

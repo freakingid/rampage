@@ -683,6 +683,59 @@ const CONFIG = {
                               // of strafes, per scalar point, clamped to 1
   },
 
+  /* ---- Scoring (05-scoring.md §6) ---------------------------------------
+     The arcade scoring table, copied verbatim — every value here is
+     [FAITHFUL]; nothing is rounded, rebalanced, or "improved." `ScoreSystem`
+     (below the Monster class) is the only thing that reads this table.
+
+     A number of rows have no code path yet because Phase 1 never built the
+     entity/feature they score — the same "defined but unreachable" pattern
+     `CONFIG.health.damage` used in Session 4 for sources that hadn't arrived
+     yet (a name and number ready for whichever session adds the thing that
+     fires it): `boater`/`train` explicitly wait on Session 9's level
+     features per 05-scoring.md itself; `carParked`/`carMovingSlow`/
+     `carParkedTakeoff` and `lootBag` were never built as entities in any
+     prior session; `lightBulbOff`/`televisionOff`/`neonSign` want an "off"
+     (safe-to-grab) pickup variant that 03-eating-health.md §4.3 calls for
+     explicitly ("when off, TV/light bulb/neon can instead be knocked out
+     for points") but Sessions 4/6 only ever implemented the lit/dangerous
+     one; `megaVitaminBonus` waits on Session 9's 128-day loop counter. See
+     STATUS.md's Session 8 notes and 13-inferred-items.md #41 for the list.
+
+     Two rows are a *range* in the source table rather than one number
+     (`designatedVictimHold`, `safe`) — resolved via `Game.nextScoreFrac`,
+     the same no-RNG deterministic trick every other system in this file
+     uses for an undocumented random choice. [INFERRED — 13-inferred-
+     items.md #41: nothing says how the arcade picked a value in either
+     range, or whether the hold bonus is awarded at grab or release.]     */
+  scoring: {
+    punchPartial: 25,
+    punchFull: 225,
+    buildingDestroyed: 2500,
+    eatCivilian: 500,
+    foodItem: 175,
+    designatedVictimHold: { min: 4000, max: 6000 },
+    lootBag: { min: 100, max: 500 },   // unreachable — no loot-bag entity exists
+    safe: { min: 100, max: 500 },
+    flowerPot: 500,
+    manholeCover: 500,
+    neonSign: 1000,                    // unreachable — only the lit/dangerous NEON_SIGN exists
+    lightBulbOff: 500,                 // unreachable — only the lit/dangerous LIT_BULB exists
+    televisionOff: 500,                // unreachable — only the lit/dangerous TV_ON exists
+    train: 500,                        // unreachable — level feature, Session 9
+    boater: 750,                       // unreachable — level feature, Session 9
+    helicopter: 750,
+    photographer: 750,
+    policeCar: 750,
+    carParkedTakeoff: 750,             // unreachable — no Car entity was ever built
+    carMovingSlow: 200,                // unreachable — no Car entity was ever built
+    tank: 200,
+    carParked: 100,                    // unreachable — no Car entity was ever built
+    nationalGuardsman: 50,
+    paratrooper: 50,
+    megaVitaminBonus: 5000,            // unreachable — Session 9's 128-day loop counter
+  },
+
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
      Type data only: sprite/palette, punch-animation flavor, designated-victim
      id. NO stats. Colors are [INFERRED] (13-inferred-items.md #6) — sources
@@ -783,6 +836,13 @@ const CONFIG = {
     textColor: '#cfd6e4',
     dimTextColor: '#5f6880',
     accentColor: '#e8c452',
+    // Per-monster HUD energy bar (08-hud-ui.md §9) — same look the Session
+    // 4-7 debug bars used, just relocated onto the real HUD strip.
+    hudBarWidth: 140,
+    hudBarHeight: 6,
+    hudBarBgColor: '#20242f',
+    hudBarColor: '#5fbf6a',
+    hudBarLowColor: '#c0392b',
     // Screen text positions. Absolute y for full-screen text; card-relative
     // offsets for anything drawn inside a character-select card.
     layout: {
@@ -1129,8 +1189,9 @@ class Building extends Entity {
    * the section's state: 'partial' when the section first cracks (§6: 25 pts),
    * 'full' when the punch opens a hole (§6: 225 pts). Removing an
    * already-holed section returns null — §6 has no row for it.
-   * [INFERRED — 13-inferred-items.md #18.] Session 8's ScoreSystem consumes
-   * this; Session 3 only has to make the damage happen.
+   * [INFERRED — 13-inferred-items.md #18.] `ScoreSystem` consumes this
+   * return value (see Monster.resolvePunch); Session 3 only had to make the
+   * damage happen.
    *
    * `game` is optional so Session 3's call sites (and the headless tests)
    * keep working unchanged; pass it to get item reveals on the HOLE
@@ -1332,8 +1393,14 @@ class Building extends Entity {
 
     spawnDustPuffs(game, this);
 
-    // The attribution record §6 needs. Session 8's ScoreSystem reads these and
-    // pays 2,500 only when causedBy is one of its own monsters.
+    // §6: "the 2,500-point building bonus is only credited to the monster
+    // that actually caused the collapse." `causedBy` is null for a
+    // third-party collapse (demolition charge, bomb — Session 6), so
+    // ScoreSystem.award's own falsy-monster guard pays nobody, no branch
+    // needed here.
+    game.scoreSystem.award(this.causedBy, CONFIG.scoring.buildingDestroyed, 'buildingDestroyed');
+
+    // The attribution record, kept for the debug readout's collapse list.
     game.collapseEvents.push({
       building: this,
       buildingIndex: this.index,
@@ -1567,13 +1634,32 @@ class Pickup extends Entity {
   consume(monster, game) {
     if (!this.alive) return;
     if (this.def.category === 'weapon') {
-      if (game) game.entities.add(Projectile.spawnDroppedObject(this.x, this.y, this.def));
+      if (game) game.entities.add(Projectile.spawnDroppedObject(this.x, this.y, this.def, monster));
       this.despawn();
       return;
     }
     if (this.def.heal) monster.heal(this.def.heal, this.def.id);
     if (this.def.damage) monster.applyDamage(this.def.damage, this.def.id);
+    if (game) this.awardScore(monster, game);
     this.despawn();
+  }
+
+  /**
+   * §6 — the two Pickup categories that score on a successful eat: `food`
+   * (flat 175 regardless of which specific item — the table gives one
+   * number for the whole turkey/hamburger/milk/fruit/toast group, distinct
+   * from each item's own `heal` amount) and the Photographer, eaten before
+   * its flash (the table's only fuse-hazard row — BATHER has no row and
+   * scores nothing, the same "no row = no score" convention
+   * Building.damageCell already uses for the final GONE punch). `bad`/
+   * `electrical`/`dynamite`/`neutral` categories have no §6 row either.
+   */
+  awardScore(monster, game) {
+    if (this.def.category === 'food') {
+      game.scoreSystem.award(monster, CONFIG.scoring.foodItem, this.def.id);
+    } else if (this.def.id === 'PHOTOGRAPHER') {
+      game.scoreSystem.award(monster, CONFIG.scoring.photographer, 'PHOTOGRAPHER');
+    }
   }
 
   despawn() {
@@ -1727,10 +1813,15 @@ class Human extends Entity {
   }
 
   /** §4.2 — eaten (the only outcome for a civilian, or for the wrong
-   * monster's designated victim; see Monster.interactWithHuman). */
-  consume(monster) {
+   * monster's designated victim; see Monster.interactWithHuman). §6: "eat a
+   * civilian" scores flat regardless of which Human type this is — the GDD
+   * gives no separate row for eating the wrong monster's designated victim
+   * or a struggled-free former one, both of which read as "just another
+   * civilian to eat" per Session 5's own framing. [INFERRED.] */
+  consume(monster, game) {
     if (!this.alive) return;
     monster.heal(CONFIG.humans.civilianHeal, this.typeId);
+    game.scoreSystem.award(monster, CONFIG.scoring.eatCivilian, this.typeId);
     this.despawn();
   }
 
@@ -1792,6 +1883,11 @@ class Enemy extends Entity {
     // find it. Every other Enemy so far is destroyable, hence the default.
     this.punchable = true;
   }
+
+  /** §6 — points awarded for destroying/eating this enemy. Overridden per
+   * subclass; the base 0 is a safe default for anything (LightningCloud)
+   * that's never actually reachable through the punch-resolution path. */
+  get scorePoints() { return 0; }
 }
 
 
@@ -1920,6 +2016,9 @@ class Guardsman extends Enemy {
       }
     }
   }
+
+  /** §6 — "National Guardsman: 50", no distinction by variant. */
+  get scorePoints() { return CONFIG.scoring.nationalGuardsman; }
 
   /** A connecting punch — window or street. Only the window variant heals;
    * §5.1 only documents eating from a window. */
@@ -2054,6 +2153,9 @@ class Helicopter extends Enemy {
     }
   }
 
+  /** §6 — "Helicopter: 750". */
+  get scorePoints() { return CONFIG.scoring.helicopter; }
+
   /** "Can be destroyed on its approach" — a connecting punch is all it
    * takes. No heal; a helicopter isn't food. */
   consume() {
@@ -2130,6 +2232,9 @@ class Vehicle extends Enemy {
         (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
   }
 
+  /** §6 — "Police car: 750" / "Tank: 200". */
+  get scorePoints() { return this.variant === 'POLICE' ? CONFIG.scoring.policeCar : CONFIG.scoring.tank; }
+
   /** A connecting punch — no heal, a vehicle isn't food. */
   consume() {
     this.alive = false;
@@ -2201,6 +2306,9 @@ class Paratrooper extends Enemy {
       }
     }
   }
+
+  /** §6 — "Paratrooper: 50". */
+  get scorePoints() { return CONFIG.scoring.paratrooper; }
 
   /** A connecting punch — no heal, same reasoning as the street Guardsman. */
   consume() {
@@ -2312,6 +2420,8 @@ class Projectile extends Entity {
     this.fuseTimer = 0;
     this.damageKey = null;    // SHELL only — 'tankShell' | 'shell'
     this.color = null;        // DROPPED_OBJECT only — copied from its Pickup def
+    this.weaponId = null;     // DROPPED_OBJECT only — Pickup def id, for §6 scoring
+    this.byMonster = null;    // DROPPED_OBJECT only — who punched it loose (§6 credit)
   }
 
   static spawnBullet(x, y, dir) {
@@ -2344,12 +2454,16 @@ class Projectile extends Entity {
   /** Environmental weapon knocked loose from a building cell (§4.3/§5.1) —
    * new in Session 7. Straight down; destroys the first Tank/Police/
    * Helicopter it reaches (Game.groundOrAirUnitHitBy), otherwise vanishes
-   * harmlessly at street level. [INFERRED — 13-inferred-items.md #40.] */
-  static spawnDroppedObject(x, y, def) {
+   * harmlessly at street level. [INFERRED — 13-inferred-items.md #40.]
+   * `byMonster` is who punched it loose — new in Session 8, so a hit it
+   * eventually lands can credit the right player's score (§6). */
+  static spawnDroppedObject(x, y, def, byMonster) {
     const P = CONFIG.enemies.projectiles.dropped;
     const p = new Projectile('DROPPED_OBJECT', x, y, P.width, P.height);
     p.vy = P.fallSpeed;
     p.color = def.color;
+    p.weaponId = def.id;
+    p.byMonster = byMonster;
     return p;
   }
 
@@ -2409,7 +2523,11 @@ class Projectile extends Entity {
       // Only reaches Tank/Police/Helicopter, never a monster — see the
       // CONFIG comment on CONFIG.enemies.projectiles.dropped.
       const target = game.groundOrAirUnitHitBy(this);
-      if (target) { target.alive = false; this.alive = false; }
+      if (target) {
+        target.alive = false;
+        this.alive = false;
+        game.scoreSystem.award(this.byMonster, this.weaponScore(game), this.weaponId);
+      }
       else if (this.y >= CONFIG.world.groundY) { this.alive = false; }
       return;
     }
@@ -2430,6 +2548,17 @@ class Projectile extends Entity {
         this.explode(game, hit);
       }
     }
+  }
+
+  /** §6 — manhole cover and flower pot score flat; safe is the table's one
+   * ranged dropped-weapon row, resolved the same deterministic way as the
+   * designated-victim hold bonus (ScoreSystem.pickInRange). */
+  weaponScore(game) {
+    const S = CONFIG.scoring;
+    if (this.weaponId === 'MANHOLE_COVER') return S.manholeCover;
+    if (this.weaponId === 'FLOWER_POT') return S.flowerPot;
+    if (this.weaponId === 'SAFE') return game.scoreSystem.pickInRange(S.safe);
+    return 0;
   }
 
   /** BOMB reaching a still-standing building's roof line (§5.1: "bombs can
@@ -2688,20 +2817,33 @@ class Monster extends Entity {
     if (streetHuman) return this.interactWithHuman(streetHuman, game);
 
     const streetEnemy = game.enemyTargetFor(this);
-    if (streetEnemy) { streetEnemy.consume(this); return 'destroyEnemy'; }
+    if (streetEnemy) {
+      const pts = streetEnemy.scorePoints;
+      streetEnemy.consume(this);
+      game.scoreSystem.award(this, pts, streetEnemy.kind);
+      return 'destroyEnemy';
+    }
 
     const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
     if (!target) return null;
     const human = target.building.humanAt(target.col, target.row);
     if (human) return this.interactWithHuman(human, game);
     const enemy = target.building.enemyAt(target.col, target.row);
-    if (enemy) { enemy.consume(this); return 'eatEnemy'; }
+    if (enemy) {
+      const pts = enemy.scorePoints;
+      enemy.consume(this);
+      game.scoreSystem.award(this, pts, enemy.kind);
+      return 'eatEnemy';
+    }
     const pickup = target.building.pickupAt(target.col, target.row);
     if (pickup) { pickup.consume(this, game); return 'eat'; }
-    // The return value is the §6 break kind ('partial' / 'full'). Nothing
-    // reads it until Session 8 wires up the ScoreSystem.
-    return target.building.damageCell(
+    // §6: 25 for a partial break, 225 for a full one; damageCell's return
+    // value is exactly the break kind ScoreSystem needs, no translation.
+    const breakKind = target.building.damageCell(
       target.col, target.row, CONFIG.monster.punchDamage, this, 'punch', game);
+    if (breakKind === 'partial') game.scoreSystem.award(this, CONFIG.scoring.punchPartial, 'punchPartial');
+    else if (breakKind === 'full') game.scoreSystem.award(this, CONFIG.scoring.punchFull, 'punchFull');
+    return breakKind;
   }
 
   /**
@@ -2721,11 +2863,18 @@ class Monster extends Entity {
       this.grabHuman(human, game);
       return 'grab';
     }
-    human.consume(this);
+    human.consume(this, game);
     return 'eat';
   }
 
-  /** §2.3 grab: pull it out of its window (if any) and start the hold timer. */
+  /**
+   * §2.3 grab: pull it out of its window (if any) and start the hold timer.
+   * §6's "hold your designated victim" bonus (4,000-6,000) is awarded here,
+   * on a successful grab, rather than on release — the GDD doesn't say
+   * which, and awarding at grab time means a monster punched off the
+   * building (or defeated) mid-hold still keeps credit for having caught
+   * its victim. [INFERRED — 13-inferred-items.md #41.]
+   */
   grabHuman(human, game) {
     if (human.location === 'WINDOW' && human.building) {
       human.building.clearHumanCell(human.col, human.row);
@@ -2734,6 +2883,7 @@ class Monster extends Entity {
     human.holdTimer = game.nextHoldTime();
     human.state = HumanState.HELD;
     this.holding = human;
+    game.scoreSystem.award(this, game.scoreSystem.pickInRange(CONFIG.scoring.designatedVictimHold), 'designatedVictimHold');
   }
 
   /** Drop whatever this monster is currently holding — defeat and knock-off
@@ -3251,6 +3401,52 @@ class Monster extends Entity {
 
 
 /* ==========================================================================
+   05-scoring §6 — ScoreSystem
+
+   "Points come from destruction, eating, and grabbing valuables." One
+   funnel every point award routes through — `award()` — mirroring the shape
+   Monster.applyDamage/heal already established for the health bar: nothing
+   else ever touches `player.score` directly.
+
+   CONFIG.scoring is the source of truth for every value; this class only
+   decides *when* a row fires and, for the table's two ranged rows, *which*
+   value inside the range (`pickInRange`, via Game.nextScoreFrac — no RNG,
+   same convention as every other random-ish choice in this file).
+
+   Collapse attribution (§6's headline rule — "the 2,500 building bonus is
+   only credited to the monster that actually caused the collapse") isn't
+   decided here at all: Building.collapse already refuses to set `causedBy`
+   for a third-party collapse (Session 6's demolition charges/bombs), so
+   ScoreSystem.award simply never gets called for those — see
+   Building.collapse below.
+   ========================================================================== */
+class ScoreSystem {
+  constructor(game) {
+    this.game = game;
+  }
+
+  /** Every point award in the game passes through here. No-ops harmlessly if
+   * `monster` or `points` is falsy, so call sites never need their own guard
+   * (a null `causedBy`, an unpicked-up weapon's expired flight, etc.). */
+  award(monster, points, source) {
+    if (!monster || !points) return;
+    const player = this.game.players[monster.playerIndex];
+    if (!player) return;
+    player.score += points;
+    player.lastScoreEvent = { points: points, source: source, simTime: this.game.simTime };
+  }
+
+  /** §6 rows given as a range (`designatedVictimHold`, `safe`) rather than a
+   * single number — picked deterministically via Game.nextScoreFrac.
+   * [INFERRED — 13-inferred-items.md #41.] */
+  pickInRange(range) {
+    const frac = this.game.nextScoreFrac();
+    return Math.round(range.min + (range.max - range.min) * frac);
+  }
+}
+
+
+/* ==========================================================================
    09-art-audio — street backdrop (placeholder)
    AudioManager lands in Session 11; nothing makes noise yet.
    ========================================================================== */
@@ -3279,9 +3475,10 @@ function drawStreet(ctx) {
    08-hud-ui — screens and HUD
 
    Laid out as CONFIG.ui.hudColumns (3) columns from the start; a slot with no
-   player is reserved and drawn empty, never collapsed. Score and energy bars
-   arrive in Sessions 8 and 4 — Session 1 shows names only, plus the debug
-   readout below.
+   player is reserved and drawn empty (name only, dim), never collapsed down
+   to however many players actually joined. Each joined column shows the
+   monster's name, its live score, and an energy bar — §9's three required
+   pieces, per column, for up to 3 players from the start.
    ========================================================================== */
 function textAt(ctx, str, x, y, size, color, align) {
   ctx.font = size + 'px monospace';
@@ -3299,45 +3496,38 @@ function drawHudStrip(game) {
   const ctx = game.ctx;
   const U = CONFIG.ui;
   const colWidth = CONFIG.view.width / U.hudColumns;
+  const monsters = game.entities.ofType(Monster);
   for (let i = 0; i < U.hudColumns; i++) {
     const x = i * colWidth + U.hudPadX;
     const player = game.players[i];
     if (player && player.joined) {
       const type = CONFIG.monsterTypes[player.monsterTypeId];
+      const monster = monsters.find(function (m) { return m.playerIndex === player.index; });
       textAt(ctx, player.label + '  ' + type.name, x, U.hudTop, U.bodyFontSize, U.textColor);
+      textAt(ctx, String(player.score).padStart(6, '0'), x, U.hudTop + U.hudLineHeight, U.bodyFontSize, U.accentColor);
+      drawHudEnergyBar(ctx, x, U.hudTop + U.hudLineHeight * 2, monster);
     } else {
       textAt(ctx, CONFIG.players.slots[i].label + '  ----', x, U.hudTop, U.bodyFontSize, U.dimTextColor);
     }
   }
 }
 
-/**
- * 03-eating-health §4.1 debug health bars (temporary; the real per-monster
- * bars are Session 8's HUD). One row per live monster, drawn above the rest
- * of the debug text — loops over however many are actually in play instead
- * of assuming one, so it doesn't need touching when Session 10 adds a second.
- */
-function drawDebugHealthBars(game) {
-  const D = CONFIG.debug;
-  const ctx = game.ctx;
-  const barW = 60, barH = 6, gap = 8;
-  const monsters = game.entities.ofType(Monster);
-  for (let i = 0; i < monsters.length; i++) {
-    const m = monsters[i];
-    const x = D.x + i * (barW + gap);
-    const y = D.y - barH - 4;
-    const frac = clamp(m.energyFraction, 0, 1);
-    ctx.fillStyle = '#20242f';
-    ctx.fillRect(x, y, barW, barH);
-    ctx.fillStyle = frac > 0.3 ? '#5fbf6a' : '#c0392b';
-    ctx.fillRect(x, y, Math.round(barW * frac), barH);
-    ctx.strokeStyle = '#7f8ba3';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x + 0.5, y + 0.5, barW - 1, barH - 1);
-  }
+/** §9's per-monster energy bar. `monster` is null before PLAY spawns one
+ * (e.g. CHARACTER_SELECT, which also calls drawHudStrip) — draws empty. */
+function drawHudEnergyBar(ctx, x, y, monster) {
+  const U = CONFIG.ui;
+  const w = U.hudBarWidth, h = U.hudBarHeight;
+  const frac = monster ? clamp(monster.energyFraction, 0, 1) : 0;
+  ctx.fillStyle = U.hudBarBgColor;
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = frac > 0.3 ? U.hudBarColor : U.hudBarLowColor;
+  ctx.fillRect(x, y, Math.round(w * frac), h);
+  ctx.strokeStyle = U.dimTextColor;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 }
 
-/* ---- Session 1 debug readout (temporary; the real HUD is Session 8) ---- */
+/* ---- Debug readout (temporary scaffolding predating the real HUD) ---- */
 function drawDebug(game) {
   if (!CONFIG.debug.enabled) return;
   const D = CONFIG.debug;
@@ -3394,9 +3584,16 @@ function drawDebug(game) {
       '  PARATROOPERS ' + paratroopers.length + '  LIGHTNING ' + clouds.length +
       '  DIFFICULTY ' + CONFIG.difficulty.scalar);
   }
-  drawDebugHealthBars(game);
+  // Session 8 readout: live per-player score, mirroring the real HUD's
+  // numbers — kept here (unlike the old debug health bars, now redundant
+  // with drawHudEnergyBar) since it's the fastest way to confirm an
+  // attribution result without eyeballing three separate HUD columns.
+  const active = game.activePlayers();
+  if (active.length) {
+    lines.push('SCORE ' + active.map(function (p) { return p.label + ':' + p.score; }).join('  '));
+  }
   // Session 3 readout: per-building structure %, state, and who owns the
-  // collapse. Goes away with the rest of the debug strip in Session 8.
+  // collapse — still the quickest way to confirm §6's attribution rule.
   if (game.buildings.length) {
     const parts = [];
     for (const b of game.buildings) {
@@ -3473,8 +3670,10 @@ class Game {
 
     /* 02 §3.3 / 05-scoring §6 — one record per collapse, in the order they
        happened, each carrying the monster that caused it (or null for a
-       third-party collapse). This is the attribution the 2,500-point bonus
-       depends on; Session 8's ScoreSystem is what drains it. Reset per day. */
+       third-party collapse). Building.collapse reads causedBy off this same
+       building to award (or not award) the 2,500-point bonus the instant it
+       happens; this array itself is kept only for the debug readout. Reset
+       per day. */
     this.collapseEvents = [];
 
     /* 01-monsters §2.3 — fleeing street-civilian spawn cadence and the
@@ -3497,6 +3696,12 @@ class Game {
     this.lightningTimer = 0;
     this.spawnSeed = 0;
 
+    /* 05-scoring §6 — deterministic pseudo-random source for the table's two
+       ranged rows (designated-victim hold, safe), same no-RNG convention and
+       reset-per-day treatment as holdSeed/spawnSeed. See ScoreSystem. */
+    this.scoreSeed = 0;
+    this.scoreSystem = new ScoreSystem(this);
+
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
     for (let i = 0; i < CONFIG.players.maxPlayers; i++) {
@@ -3506,7 +3711,8 @@ class Game {
         joined: i < CONFIG.players.activeAtStart,
         monsterTypeId: MONSTER_TYPE_IDS[i % MONSTER_TYPE_IDS.length],
         confirmed: false,
-        score: 0,                 // ScoreSystem takes this over in Session 8
+        score: 0,                 // the only thing that writes here is ScoreSystem.award
+        lastScoreEvent: null,     // { points, source, simTime } — HUD/debug flourish, not read for logic
       });
     }
     this.dayIndex = 0;            // LevelData drives this from Session 9
@@ -3592,6 +3798,7 @@ class Game {
     this.paratrooperTimer = 0;
     this.lightningTimer = 0;
     this.spawnSeed = 0;
+    this.scoreSeed = 0;            // §6 — only the range-pick sequence resets; player.score does not
     this.spawnBuildings();
     this.spawnMonsters();
   }
@@ -3640,6 +3847,18 @@ class Game {
   nextSpawnFrac() {
     this.spawnSeed++;
     return (this.spawnSeed * 2654435761) % 1000 / 1000;
+  }
+
+  /**
+   * 05-scoring §6 — a deterministic stand-in for Math.random(), same trick
+   * as nextHoldTime/nextSpawnFrac, on its own counter so it can't perturb
+   * either of those sequences. The only two rows in the scoring table given
+   * as a range (designated-victim hold, safe) resolve a point value through
+   * this — see ScoreSystem.pickInRange.
+   */
+  nextScoreFrac() {
+    this.scoreSeed++;
+    return (this.scoreSeed * 2654435761) % 1000 / 1000;
   }
 
   /**
@@ -4264,7 +4483,7 @@ function boot() {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
     Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
-    Vehicle, Paratrooper, LightningCloud,
+    Vehicle, Paratrooper, LightningCloud, ScoreSystem,
   };
   return game;
 }

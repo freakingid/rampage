@@ -48,8 +48,11 @@
      09-art-audio .................... DustPuff (collapse particle)
      03-eating-health ................ Pickup (food & hazards revealed by
                                        punching cells)                    §4.2, §4.3
-     01-monsters ..................... Human (civilians, designated victims,
-     03-eating-health                  window-soldier placeholder)  §2.3, §4.2
+     01-monsters ..................... Human (civilians, designated victims)
+                                       §2.3, §4.2
+     04-military-hazards ............. Enemy base, Guardsman, Helicopter,
+                                       Projectile (bullets/dynamite/bombs/
+                                       demolition charges)              §5.1
      01-monsters ..................... Monster class (all three types identical)
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
      03-eating-health ................ energy bar, applyDamage/heal, defeat &
@@ -75,15 +78,28 @@
    entities (food, bad items, live electrical, wall dynamite with its fuse,
    photographer/bather knock-off hazards) revealed when a punch opens a cell.
    Session 5 scope: civilians and designated victims. A Human entity with a
-   role flag (civilian / designated victim / window-soldier placeholder)
-   appears in windows (sharing the punch-reveals-an-occupant mechanism
-   Session 4 built for Pickup) and flees across the street. Punching one
-   eats it for health, same single grab/eat action Pickup already uses —
-   except a monster's own designated victim (woman/George, middle-aged
-   man/Lizzie, businessman/Ralph) is grabbed and held instead, struggles
-   free after a random time, and can then be eaten like any civilian. While
-   held, `Monster.isHoldingVictim` is the hook Session 6's Guardsmen will
-   read to stop firing.
+   role flag (civilian / designated victim) appears in windows (sharing the
+   punch-reveals-an-occupant mechanism Session 4 built for Pickup) and flees
+   across the street. Punching one eats it for health, same single grab/eat
+   action Pickup already uses — except a monster's own designated victim
+   (woman/George, middle-aged man/Lizzie, businessman/Ralph) is grabbed and
+   held instead, struggles free after a random time, and can then be eaten
+   like any civilian. While held, `Monster.isHoldingVictim` is the hook
+   Session 6's Guardsmen read to stop firing.
+   Session 6 scope: the two military threats present every day. `Enemy`
+   base class (a `behavior` field, nothing else shared) plus `Guardsman`
+   (window variant pops out to shoot/throw dynamite, edible for health;
+   street variant runs to a building's base and plants a demolition charge)
+   and `Helicopter` (early strafing-dive behavior and later bombing-run
+   behavior, both implemented, picked per-instance by a CONFIG difficulty
+   flag). One `Projectile` class covers bullets, thrown dynamite, dropped
+   bombs and planted demolition charges. Charges and bombs damage buildings
+   with `byMonster` null, so any collapse they cause is never credited to a
+   player (`Building.causedBy` stays null — Session 3's seam). A
+   `SpawnDirector` (three cadence timers on `Game`) keeps a steady trickle
+   of both threats going. Session 5's `HumanRole.WINDOW_SOLDIER` placeholder
+   is removed — the window Guardsman is an `Enemy` subclass instead, per
+   10-architecture.md §11.3.
    ========================================================================== */
 
 
@@ -186,8 +202,10 @@ const CONFIG = {
 
     damage: {
       fall: 30,              // §3.3 collapse fall damage — wired since Session 3
-      bullet: 10,             // Session 6 — Guardsman rifle, not called yet
-      dynamiteThrown: 20,     // Session 6 — Guardsman-thrown dynamite, not called yet
+      bullet: 10,             // Session 6 — Guardsman rifle, wired this session
+      dynamiteThrown: 20,     // Session 6 — Guardsman-thrown dynamite, wired this session
+      bomb: 25,               // Session 6 — helicopter bombing run, wired this session
+                              // [INFERRED — new this session, 13-inferred-items.md #33]
       shell: 15,              // Session 7 — police car shell, not called yet
       tankShell: 25,          // Session 7 — tank shell, not called yet
       lightning: 20,          // Session 7 — lightning cloud, not called yet
@@ -296,10 +314,11 @@ const CONFIG = {
       WOMAN:           { id: 'WOMAN', role: 'DESIGNATED_VICTIM', victimOf: 'GEORGE', color: '#c9506f' },
       MIDDLE_AGED_MAN: { id: 'MIDDLE_AGED_MAN', role: 'DESIGNATED_VICTIM', victimOf: 'LIZZIE', color: '#d8c452' },
       BUSINESSMAN:     { id: 'BUSINESSMAN', role: 'DESIGNATED_VICTIM', victimOf: 'RALPH', color: '#3a3f52' },
-      // Session 6 placeholder (§2.3's grab loop doesn't apply to this role):
-      // the role exists so Human can represent it, but Phase 1 never spawns
-      // one — there's no shooting/behavior to give it yet.
-      WINDOW_SOLDIER:  { id: 'WINDOW_SOLDIER', role: 'WINDOW_SOLDIER', color: '#5c6b4a' },
+      // Session 5 left a WINDOW_SOLDIER placeholder here for "the window
+      // Guardsman might just be a Human with a role flag." Session 6
+      // resolved that per 10-architecture.md §11.3: Guardsman is an Enemy
+      // subclass instead (see the Guardsman class), so the placeholder is
+      // removed rather than left dead — nothing ever spawned one.
     },
   },
 
@@ -391,6 +410,123 @@ const CONFIG = {
       { wall: '#44525a', wallShade: '#35414a', roof: '#566670', windowLit: '#d8e08a', windowDark: '#232b33' },
       { wall: '#53485e', wallShade: '#41384a', roof: '#665a73', windowLit: '#e0a86a', windowDark: '#282232' },
     ],
+  },
+
+  /* ---- Military — Guardsmen, helicopters, munitions (04-military-hazards
+     §5.1) --------------------------------------------------------------
+     "The military attacks continuously. Present every day: National
+     Guardsmen and helicopters." Neither fire rates, projectile speeds, nor
+     spawn cadences are documented anywhere in the GDD — every number below
+     is a first-pass guess, same as CONFIG.monster was in Session 1.
+     [INFERRED — 13-inferred-items.md #10, and see #33 below for what's new
+     this session.]                                                        */
+  enemies: {
+    guardsman: {
+      width: 12,
+      height: 20,          // same footprint as CONFIG.humans — fits one cell
+      color: '#4a5c3a',
+      helmetColor: '#313f22',
+      eatHeal: 20,          // §5.1 "can be eaten ... removes threat + heals" —
+                            // the fact of healing is faithful, the amount isn't
+      /* -- Window variant: pops out to shoot / throw dynamite -------------
+         [INFERRED] fire cadence, dynamite mix and target range — nothing in
+         §5.1 gives numbers for any of these.                              */
+      window: {
+        fireInterval: 1.6,       // s between fire attempts once popped out
+        fireIntervalJitter: 0.4, // +/- s so windows don't fire in lockstep
+        dynamiteChance: 0.35,    // fraction of fire attempts that throw
+                                 // dynamite instead of shooting
+        targetRange: 260,       // px — won't bother firing at nothing in range
+      },
+      /* -- Street variant: runs to a building's base and plants a charge -- */
+      street: {
+        speed: 55,          // px/s running toward the target building
+        plantTime: 2.2,     // s stationary at the base before the charge arms
+      },
+    },
+
+    /* Planted by the street Guardsman variant (§3.2/§5.1). A fuse, then it
+       clears the *entire* bottom row of its building outright — the same
+       "loss of lower support" collapse route Session 3 built
+       (`collapseOnBottomRowGone`), so a charge reliably brings a building
+       down by itself rather than needing several. `byMonster` is passed as
+       null the whole way through to `Building.damageCell`, which is what
+       keeps `causedBy` null and pays the building bonus to nobody later
+       (§6) — see Projectile.updateCharge. [INFERRED — new this session,
+       13-inferred-items.md #33.]                                          */
+    demolitionCharge: {
+      fuse: 3.0,
+      cellDamage: 999,      // overkill — guarantees each targeted cell clears
+      color: '#c0392b',
+    },
+
+    /* Helicopter (§5.1): "flies over, turns, and dives to strafe" early on;
+       "drops bombs from altitude" later. Both behaviors are implemented;
+       `behaviorMode` is the difficulty flag SpawnDirector reads for each new
+       helicopter it spawns. Session 9's day/level system is what will
+       eventually flip this per-day per §5.2 ("helicopters shift from
+       strafing to bombing") — until then it's a manual CONFIG toggle.
+       [INFERRED] every number below, including cruise/dive altitudes,
+       which are picked so a helicopter always flies above every building's
+       roofline except during its strafing dive, and that dive line sits
+       just above the *tallest* building in the current day layout so only
+       a monster on that roof can reach up and punch it — "destroyed on its
+       approach" (§5.1).                                                   */
+    helicopter: {
+      width: 34,
+      height: 14,
+      bodyColor: '#5a6270',
+      rotorColor: '#232630',
+      behaviorMode: 'STRAFE',    // 'STRAFE' | 'BOMB' — the difficulty flag
+      cruiseAltitudeY: 70,       // px — well above every rooftop
+      cruiseSpeed: 90,           // px/s horizontal
+      strafe: {
+        diveAltitudeY: 150,      // px — just above the tallest building's roof
+        diveSpeed: 70,           // px/s vertical, both down and back up
+        burstCount: 5,           // rounds fired during one strafing pass
+        burstInterval: 0.09,     // s between rounds in the burst
+      },
+      bomb: {
+        dropInterval: 1.4,       // s between bomb releases while over the city
+      },
+    },
+
+    /* Projectiles: bullets (Guardsman rifle + helicopter strafe), thrown
+       dynamite (Guardsman), and bombs (helicopter bombing run). One class,
+       `kind` picks the flavor — 10-architecture.md §11.3's "new
+       enemy/hazard = new subclass" seam doesn't apply here since these are
+       all "a munition in flight," not new actors.                         */
+    projectiles: {
+      bullet: { speed: 240, width: 6, height: 3, color: '#e8d97a' },
+      dynamite: {
+        speed: 140,        // px/s horizontal, toward the target at throw time
+        upSpeed: -180,      // initial px/s vertical (thrown up and out)
+        gravity: 500,       // px/s^2 — arcs back down
+        fuse: 1.4,          // s — caps airtime even off an awkward bounce
+        blastRadius: 26,    // px — area damage on detonation
+        width: 6, height: 6, color: '#c0392b',
+      },
+      bomb: {
+        fallSpeed: 160,     // px/s straight down, no horizontal carry
+                           // [INFERRED — simplest kinematics, same reasoning
+                           // as knock-off in 13-inferred-items.md #25]
+        blastRadius: 20,
+        width: 8, height: 10, color: '#333a44',
+      },
+    },
+  },
+
+  /* ---- SpawnDirector (10-architecture.md §11.3, 04-military-hazards §5.1)
+     "Present every day: National Guardsmen and helicopters." Cadence values
+     only — the day/difficulty scaling itself (§5.2) is Session 7/9's job.
+     [INFERRED] every value — nothing is documented.                       */
+  spawnDirector: {
+    guardsmanWindowInterval: 4.0,   // s between window-Guardsman spawn rolls
+    maxWindowGuardsmen: 3,          // concurrent
+    guardsmanStreetInterval: 9.0,   // s between street-Guardsman spawn rolls
+    maxStreetGuardsmen: 1,          // concurrent
+    helicopterInterval: 14.0,       // s between helicopter spawn rolls
+    maxHelicopters: 1,              // concurrent
   },
 
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
@@ -761,7 +897,7 @@ class Building extends Entity {
     this.cells = [];
     for (let r = 0; r < rows; r++) {
       const row = [];
-      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp, pickup: null, human: null });
+      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp, pickup: null, human: null, enemy: null });
       this.cells.push(row);
     }
 
@@ -875,6 +1011,7 @@ class Building extends Entity {
     // but it's a safety net for any other future caller of damageCell.
     if (cell.pickup) { cell.pickup.alive = false; cell.pickup = null; }
     if (cell.human) { cell.human.alive = false; cell.human = null; }
+    if (cell.enemy) { cell.enemy.alive = false; cell.enemy = null; }
     return null;
   }
 
@@ -898,6 +1035,35 @@ class Building extends Entity {
   clearHumanCell(col, row) {
     const cell = this.cellAt(col, row);
     if (cell) cell.human = null;
+  }
+
+  /** 04-military-hazards §5.1 — is a window Guardsman occupying this cell? */
+  enemyAt(col, row) {
+    const cell = this.cellAt(col, row);
+    return cell ? cell.enemy : null;
+  }
+
+  clearEnemyCell(col, row) {
+    const cell = this.cellAt(col, row);
+    if (cell) cell.enemy = null;
+  }
+
+  /**
+   * 04-military-hazards §5.1 — SpawnDirector's hook: pop a Guardsman out of
+   * this cell, if it's free and still has a wall to pop out of (INTACT or
+   * CRACKED — a HOLE/GONE cell has nothing left to lean out of).
+   * [INFERRED — not documented either way, but it's the same "needs a wall"
+   * reading `resolvePunch` already uses when it stops chewing at GONE.]
+   * Returns the new Guardsman, or null if the cell doesn't qualify.
+   */
+  spawnEnemyWindow(col, row, game) {
+    const cell = this.cellAt(col, row);
+    if (!cell || cell.pickup || cell.human || cell.enemy) return null;
+    if (cell.state !== CellState.INTACT && cell.state !== CellState.CRACKED) return null;
+    const enemy = Guardsman.spawnInWindow(this, col, row);
+    cell.enemy = enemy;
+    game.entities.add(enemy);
+    return enemy;
   }
 
   /**
@@ -1292,7 +1458,8 @@ class Pickup extends Entity {
 const HumanRole = {
   CIVILIAN: 'CIVILIAN',
   DESIGNATED_VICTIM: 'DESIGNATED_VICTIM',
-  WINDOW_SOLDIER: 'WINDOW_SOLDIER',   // Session 6 placeholder — never spawned yet
+  // WINDOW_SOLDIER removed in Session 6 — the window Guardsman is an Enemy
+  // subclass instead (see Guardsman, below Human in this file).
 };
 
 const HumanState = {
@@ -1432,6 +1599,470 @@ class Human extends Entity {
 
 
 /* ==========================================================================
+   04-military-hazards §5.1 — Enemy (base class)
+
+   "The military attacks continuously. Present every day: National
+   Guardsmen and helicopters." One thin base class per 10-architecture.md
+   §11.3 ("Enemy — Guardsman, Helicopter, Tank, Police, Paratrooper via a
+   `behavior` field/strategy"). `behavior` is a subclass-defined string
+   naming whatever sub-state that particular enemy is currently in (idle,
+   diving, planting, ...) — there's no shared state machine here, just a
+   documented place to put one, the same shape `Monster.stance` uses for
+   traversal.
+
+   STATUS.md's Session 6 hook left this decision open: the Session 5
+   `WINDOW_SOLDIER` placeholder on `Human` is superseded by this — a window
+   Guardsman is an `Enemy`, not a `Human`, per the architecture doc's
+   explicit suggestion. `HumanRole.WINDOW_SOLDIER` and its CONFIG entry are
+   removed below since nothing ever spawns one.
+   ========================================================================== */
+class Enemy extends Entity {
+  constructor(x, y, w, h, kind) {
+    super(x, y, w, h);
+    this.kind = kind;        // 'GUARDSMAN_WINDOW' | 'GUARDSMAN_STREET' | 'HELICOPTER'
+    this.behavior = null;    // subclass-defined current behavior/sub-state
+  }
+}
+
+
+/* ==========================================================================
+   04-military-hazards §5.1 — Guardsman
+
+   "Pops out of building windows to shoot and throw dynamite ... some run in
+   from the screen edge to plant demolition charges at a building's base.
+   Can be eaten out of windows (removes threat + heals)."
+
+   One class, two spawn shapes (`variant`), same pattern Session 5 used for
+   Human's window/street split:
+
+   - WINDOW — anchored to a building cell like Human.spawnInWindow, chosen
+     by SpawnDirector (not revealed by punching — this one climbs out on its
+     own initiative). Fires on an interval: a straight bullet, or a lobbed
+     dynamite toward whichever monster is in range. Eating it (a connecting
+     punch, same single grab/eat action as Pickup/Human — 13-inferred-items
+     #24/#27) heals the monster and removes the threat.
+   - STREET — spawns at a screen edge like Human.spawnOnStreet and runs for
+     the nearest standing building's base; once there it plants a
+     Projectile('CHARGE') and is done. [INFERRED — the GDD doesn't say
+     whether the street runner can be stopped before it plants; a
+     connecting punch destroys it either way, but only the WINDOW variant
+     heals on eating — 13-inferred-items.md #34.]
+
+   §2.3's hook, now observed: a window Guardsman skips firing at a monster
+   currently holding its designated victim (`Monster.isHoldingVictim`).
+   [INFERRED — 13-inferred-items.md #7 left the scope undecided; this
+   implements it per-target (the Guardsman's actual target monster), not as
+   a global "nobody fires" switch, since a Guardsman shooting at a monster
+   two buildings over has no reason to care what a different monster is
+   holding.]
+   ========================================================================== */
+class Guardsman extends Enemy {
+  constructor(variant, x, y) {
+    const G = CONFIG.enemies.guardsman;
+    super(x, y, G.width, G.height, variant === 'WINDOW' ? 'GUARDSMAN_WINDOW' : 'GUARDSMAN_STREET');
+    this.variant = variant;
+    if (variant === 'WINDOW') {
+      this.behavior = 'ACTIVE';
+      this.building = null;
+      this.col = -1;
+      this.row = -1;
+      this.fireTimer = G.window.fireInterval;
+    } else {
+      this.behavior = 'RUNNING';
+      this.targetBuilding = null;
+      this.runDir = 0;
+      this.plantTimer = 0;
+    }
+  }
+
+  static spawnInWindow(building, col, row) {
+    const r = building.cellRect(col, row);
+    const g = new Guardsman('WINDOW', r.x + r.w / 2, r.y + r.h);
+    g.building = building;
+    g.col = col;
+    g.row = row;
+    return g;
+  }
+
+  static spawnOnStreet(x, runDir, targetBuilding) {
+    const g = new Guardsman('STREET', x, CONFIG.world.groundY);
+    g.runDir = runDir;
+    g.targetBuilding = targetBuilding;
+    return g;
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    if (this.variant === 'WINDOW') this.updateWindow(dt, game);
+    else this.updateStreet(dt, game);
+  }
+
+  updateWindow(dt, game) {
+    // The building it's popping out of came down under it — safety net,
+    // same shape as Pickup.update / Human.update's building-collapse check.
+    if (!this.building.standing || this.building.cellAt(this.col, this.row).state === CellState.GONE) {
+      this.despawn();
+      return;
+    }
+    this.fireTimer -= dt;
+    if (this.fireTimer <= 0) {
+      const W = CONFIG.enemies.guardsman.window;
+      this.fireTimer = W.fireInterval + (game.nextSpawnFrac() - 0.5) * 2 * W.fireIntervalJitter;
+      this.tryFire(game);
+    }
+  }
+
+  tryFire(game) {
+    const W = CONFIG.enemies.guardsman.window;
+    const target = game.nearestMonster(this.x, this.y, W.targetRange);
+    if (!target) return;
+    if (target.isHoldingVictim) return;   // §2.3 hook, observed at last
+    if (game.nextSpawnFrac() < W.dynamiteChance) {
+      game.entities.add(Projectile.spawnDynamite(this.x, this.y, target));
+    } else {
+      const dir = target.x < this.x ? -1 : 1;
+      game.entities.add(Projectile.spawnBullet(this.x, this.y, dir));
+    }
+  }
+
+  updateStreet(dt, game) {
+    const S = CONFIG.enemies.guardsman.street;
+    if (this.behavior === 'RUNNING') {
+      if (!this.targetBuilding || !this.targetBuilding.standing) { this.despawn(); return; }
+      this.vx = this.runDir * S.speed;
+      this.x += this.vx * dt;
+      const baseX = this.targetBuilding.x;
+      const reached = this.runDir > 0 ? this.x >= baseX : this.x <= baseX;
+      if (reached) {
+        this.x = baseX;
+        this.vx = 0;
+        this.behavior = 'PLANTING';
+        this.plantTimer = S.plantTime;
+      }
+      return;
+    }
+    if (this.behavior === 'PLANTING') {
+      if (!this.targetBuilding.standing) { this.despawn(); return; } // punched down mid-plant
+      this.plantTimer -= dt;
+      if (this.plantTimer <= 0) {
+        game.entities.add(Projectile.spawnCharge(this.targetBuilding));
+        this.despawn();
+      }
+    }
+  }
+
+  /** A connecting punch — window or street. Only the window variant heals;
+   * §5.1 only documents eating from a window. */
+  consume(monster) {
+    if (!this.alive) return;
+    if (this.variant === 'WINDOW') monster.heal(CONFIG.enemies.guardsman.eatHeal, 'GUARDSMAN');
+    this.despawn();
+  }
+
+  despawn() {
+    this.alive = false;
+    if (this.variant === 'WINDOW' && this.building) this.building.clearEnemyCell(this.col, this.row);
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const G = CONFIG.enemies.guardsman;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    ctx.fillStyle = G.color;
+    ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
+    ctx.fillStyle = G.helmetColor;
+    ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, Math.round(this.h * 0.3));
+  }
+}
+
+
+/* ==========================================================================
+   04-military-hazards §5.1 — Helicopter
+
+   "Air support, every day. Early: flies over, turns, and dives to strafe
+   (rapid burst). Later: drops bombs from altitude. Can be destroyed on its
+   approach."
+
+   Both behaviors are implemented; `mode` is captured at spawn time from
+   `CONFIG.enemies.helicopter.behaviorMode` — the difficulty flag
+   SpawnDirector reads. Flip that CONFIG value and the next helicopter
+   spawned uses the other behavior; Session 9's day/level system is what
+   will eventually drive it automatically per §5.2.
+
+   STRAFE: APPROACH (cruise altitude, flies to mid-screen) → DIVE_DOWN (drops
+   to just above the tallest roofline) → STRAFING (a rapid burst while
+   drifting further across) → DIVE_UP (climbs back to cruise) → EXIT (flies
+   off and despawns).
+   BOMB: APPROACH the whole way across at cruise altitude, releasing a bomb
+   on a fixed interval, then EXIT.
+
+   Destruction is a single connecting punch — same `consume(monster)` shape
+   every other punch target in this file uses — via `Game.enemyTargetFor`,
+   which only ever finds it geometrically reachable during STRAFING, when it
+   dips to `diveAltitudeY` (picked to sit just above the tallest building in
+   the day layout — see the CONFIG comment). [INFERRED throughout —
+   13-inferred-items.md #35.]
+   ========================================================================== */
+class Helicopter extends Enemy {
+  constructor(x, y, dir, mode) {
+    const H = CONFIG.enemies.helicopter;
+    super(x, y, H.width, H.height, 'HELICOPTER');
+    this.dir = dir;              // 1 = left→right, -1 = right→left
+    this.mode = mode;            // 'STRAFE' | 'BOMB', fixed for this instance's life
+    this.behavior = 'APPROACH';
+    this.dropTimer = H.bomb.dropInterval;
+    this.burstsFired = 0;
+    this.burstTimer = 0;
+  }
+
+  static spawn(fromLeft, mode) {
+    const H = CONFIG.enemies.helicopter;
+    const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
+    return new Helicopter(x, H.cruiseAltitudeY, fromLeft ? 1 : -1, mode);
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    if (this.mode === 'BOMB') this.updateBomb(dt, game);
+    else this.updateStrafe(dt, game);
+  }
+
+  /** Later behavior (§5.2): straight across at altitude, dropping bombs. */
+  updateBomb(dt, game) {
+    const H = CONFIG.enemies.helicopter;
+    this.x += this.dir * H.cruiseSpeed * dt;
+    this.dropTimer -= dt;
+    if (this.dropTimer <= 0 && this.x > CONFIG.world.leftBound && this.x < CONFIG.world.rightBound) {
+      this.dropTimer = H.bomb.dropInterval;
+      game.entities.add(Projectile.spawnBomb(this.x, this.y));
+    }
+    if ((this.dir > 0 && this.x > CONFIG.world.rightBound + 20) ||
+        (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
+  }
+
+  /** Early behavior (§5.2): flies over, turns (dives), strafes, climbs out. */
+  updateStrafe(dt, game) {
+    const H = CONFIG.enemies.helicopter;
+    const S = H.strafe;
+    const mid = CONFIG.view.width / 2;
+    switch (this.behavior) {
+      case 'APPROACH':
+        this.x += this.dir * H.cruiseSpeed * dt;
+        if ((this.dir > 0 && this.x >= mid) || (this.dir < 0 && this.x <= mid)) this.behavior = 'DIVE_DOWN';
+        break;
+      case 'DIVE_DOWN':
+        this.y += S.diveSpeed * dt;
+        if (this.y >= S.diveAltitudeY) {
+          this.y = S.diveAltitudeY;
+          this.behavior = 'STRAFING';
+          this.burstsFired = 0;
+          this.burstTimer = 0;
+        }
+        break;
+      case 'STRAFING':
+        this.x += this.dir * H.cruiseSpeed * 0.5 * dt;   // slower during the pass
+        this.burstTimer -= dt;
+        if (this.burstTimer <= 0 && this.burstsFired < S.burstCount) {
+          game.entities.add(Projectile.spawnBullet(this.x, this.y, this.dir));
+          this.burstsFired++;
+          this.burstTimer = S.burstInterval;
+        }
+        if (this.burstsFired >= S.burstCount) this.behavior = 'DIVE_UP';
+        break;
+      case 'DIVE_UP':
+        this.y -= S.diveSpeed * dt;
+        this.x += this.dir * H.cruiseSpeed * dt;
+        if (this.y <= H.cruiseAltitudeY) { this.y = H.cruiseAltitudeY; this.behavior = 'EXIT'; }
+        break;
+      case 'EXIT':
+        this.x += this.dir * H.cruiseSpeed * dt;
+        if ((this.dir > 0 && this.x > CONFIG.world.rightBound + 20) ||
+            (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
+        break;
+    }
+  }
+
+  /** "Can be destroyed on its approach" — a connecting punch is all it
+   * takes. No heal; a helicopter isn't food. */
+  consume() {
+    this.alive = false;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const H = CONFIG.enemies.helicopter;
+    const cx = Math.round(this.renderX(alpha));
+    const cy = Math.round(this.renderY(alpha));
+    ctx.fillStyle = H.bodyColor;
+    ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+    ctx.fillStyle = H.rotorColor;
+    ctx.fillRect(cx - this.w / 2 - 4, cy - this.h / 2 - 2, this.w + 8, 2);
+  }
+}
+
+
+/* ==========================================================================
+   04-military-hazards §5.1 — Projectile
+
+   Bullets (Guardsman rifle + helicopter strafe burst), thrown dynamite
+   (Guardsman), bombs (helicopter bombing run) and demolition charges
+   (street Guardsman) — one class, `kind` picks the flavor of motion and
+   what it does on impact. All damage against a monster routes through the
+   same `Monster.applyDamage` funnel Session 4 built (`CONFIG.health.damage`
+   already had named slots for `bullet`/`dynamiteThrown` waiting for this
+   session, and `bomb` is new).
+
+   Building damage (`kind === 'BOMB'` hitting a roof, `kind === 'CHARGE'`
+   detonating) always calls `Building.damageCell` with `byMonster` null —
+   that's what keeps `Building.causedBy` null and pays the 2,500-point
+   building bonus to nobody (§6), per Session 3's `causedBy: null` seam and
+   this session's explicit requirement that military-caused collapses never
+   credit a player.
+   ========================================================================== */
+class Projectile extends Entity {
+  constructor(kind, x, y, w, h) {
+    super(x, y, w, h);
+    this.kind = kind;         // 'BULLET' | 'DYNAMITE' | 'BOMB' | 'CHARGE'
+    this.building = null;     // CHARGE only — the building it's anchored to
+    this.fuseTimer = 0;
+  }
+
+  static spawnBullet(x, y, dir) {
+    const P = CONFIG.enemies.projectiles.bullet;
+    const p = new Projectile('BULLET', x, y, P.width, P.height);
+    p.vx = dir * P.speed;
+    return p;
+  }
+
+  /** Lobbed toward wherever `target` is standing at throw time — no homing
+   * once airborne. [INFERRED — §5.1 gives no thrown-weapon kinematics.] */
+  static spawnDynamite(x, y, target) {
+    const P = CONFIG.enemies.projectiles.dynamite;
+    const p = new Projectile('DYNAMITE', x, y, P.width, P.height);
+    const dir = target.x < x ? -1 : 1;
+    p.vx = dir * P.speed;
+    p.vy = P.upSpeed;
+    p.fuseTimer = P.fuse;
+    return p;
+  }
+
+  /** Straight down from the helicopter's current position. */
+  static spawnBomb(x, y) {
+    const P = CONFIG.enemies.projectiles.bomb;
+    const p = new Projectile('BOMB', x, y, P.width, P.height);
+    p.vy = P.fallSpeed;
+    return p;
+  }
+
+  /** Planted, not thrown — no motion, just a fuse. */
+  static spawnCharge(building) {
+    const C = CONFIG.enemies.demolitionCharge;
+    const p = new Projectile('CHARGE', building.x, CONFIG.world.groundY, 8, 8);
+    p.building = building;
+    p.fuseTimer = C.fuse;
+    return p;
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    if (this.kind === 'CHARGE') { this.updateCharge(dt, game); return; }
+
+    if (this.kind === 'DYNAMITE') this.vy += CONFIG.enemies.projectiles.dynamite.gravity * dt;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+
+    if (this.fuseTimer > 0) {
+      this.fuseTimer -= dt;
+      if (this.fuseTimer <= 0) { this.explode(game, null); return; }
+    }
+
+    if (this.kind === 'BULLET') {
+      if (this.x < -20 || this.x > CONFIG.view.width + 20) { this.alive = false; return; }
+    } else if (this.kind === 'BOMB') {
+      const b = game.buildingAt(this.x);
+      if (b && this.y >= b.top) { this.hitBuilding(b, game); return; }
+      if (this.y >= CONFIG.world.groundY) { this.explode(game, null); return; }
+    } else if (this.kind === 'DYNAMITE') {
+      if (this.y >= CONFIG.world.groundY) { this.explode(game, null); return; }
+    }
+
+    const hit = game.monsterHitBy(this);
+    if (hit) {
+      if (this.kind === 'BULLET') {
+        hit.applyDamage(CONFIG.health.damage.bullet, 'BULLET');
+        this.alive = false;
+      } else {
+        this.explode(game, hit);
+      }
+    }
+  }
+
+  /** BOMB reaching a still-standing building's roof line (§5.1: "bombs can
+   * be baited onto buildings to collapse them"). Damages whatever cell it
+   * lands on; a building already open at the top just lets it fall through
+   * to GONE-on-GONE, a harmless no-op. */
+  hitBuilding(building, game) {
+    const idx = building.cellIndexAt(this.x, building.top + 1);
+    if (idx) {
+      building.damageCell(idx.col, idx.row, CONFIG.buildings.cellHp, null, 'bombHit', game);
+    }
+    this.explode(game, null);
+  }
+
+  /** DYNAMITE / BOMB area detonation against monsters. A direct hit always
+   * counts even outside the blast radius; otherwise anyone within it takes
+   * the hit too. */
+  explode(game, directHit) {
+    const P = this.kind === 'DYNAMITE' ? CONFIG.enemies.projectiles.dynamite : CONFIG.enemies.projectiles.bomb;
+    const source = this.kind === 'DYNAMITE' ? 'dynamiteThrown' : 'bomb';
+    const monsters = game.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m.defeated) continue;
+      if (m === directHit || Math.hypot(m.x - this.x, m.y - this.y) <= P.blastRadius) {
+        m.applyDamage(CONFIG.health.damage[source], source);
+      }
+    }
+    this.alive = false;
+  }
+
+  /** Street Guardsman's planted charge (§3.2/§5.1). Clears the whole bottom
+   * row outright the instant the fuse ends — see the CONFIG comment for why
+   * that route was chosen over a partial-damage one. `byMonster` is null the
+   * entire way, which is what keeps this collapse unattributed. */
+  updateCharge(dt, game) {
+    if (!this.building.standing) { this.alive = false; return; }   // punched down first
+    this.fuseTimer -= dt;
+    if (this.fuseTimer > 0) return;
+    const C = CONFIG.enemies.demolitionCharge;
+    const row = this.building.rows - 1;
+    for (let c = 0; c < this.building.cols; c++) {
+      this.building.damageCell(c, row, C.cellDamage, null, 'demolitionCharge', game);
+    }
+    this.alive = false;
+  }
+
+  /* ---- 09-art-audio: placeholder icon, fuse flash on CHARGE/DYNAMITE --- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const cx = Math.round(this.renderX(alpha));
+    const cy = Math.round(this.renderY(alpha));
+    const P = CONFIG.enemies.projectiles;
+    const color = this.kind === 'BULLET' ? P.bullet.color
+      : this.kind === 'DYNAMITE' ? P.dynamite.color
+      : this.kind === 'BOMB' ? P.bomb.color
+      : CONFIG.enemies.demolitionCharge.color;
+    const warn = this.fuseTimer > 0 && this.fuseTimer < 0.4 && Math.floor(this.fuseTimer * 10) % 2 === 0;
+    ctx.fillStyle = warn ? '#ffffff' : color;
+    ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+  }
+}
+
+
+/* ==========================================================================
    01-monsters — Monster
    02-movement-destruction §3.1 — movement & traversal
 
@@ -1517,11 +2148,10 @@ class Monster extends Entity {
 
   /**
    * §2.3 — "while a monster holds its designated victim, only the National
-   * Guardsmen stop firing." Session 6 doesn't exist yet, so nothing reads
-   * this yet; the hook is here so it's observable the moment Guardsmen are.
-   * [INFERRED — 13-inferred-items.md #7: single-source claim, and whether
-   * it's scoped per-monster or applies globally isn't documented either;
-   * Session 6 decides that when it wires up Guardsman AI.]
+   * Guardsmen stop firing." Read by `Guardsman.tryFire` (04-military-hazards
+   * §5.1) against whichever specific monster it's about to fire at.
+   * [INFERRED — 13-inferred-items.md #7: single-source claim; Session 6
+   * scoped it per-target rather than as a global "nobody fires" switch.]
    */
   get isHoldingVictim() { return !!this.holding; }
 
@@ -1598,23 +2228,33 @@ class Monster extends Entity {
    * priority a street civilian would almost never be reachable — the wider
    * wall-reaching rect would always find some building cell first.
    *
-   * Failing that, a human occupying the targeted building cell (civilian,
-   * designated victim, or the Session 6 soldier placeholder) takes priority
-   * over a Pickup, which takes priority over wall damage — see
-   * interactWithHuman for what a human does with the punch. If the targeted
-   * cell is open and has an item sitting in it instead, the punch eats/grabs
-   * the item — §4.3's "because punching is fast, a greedy player will
-   * sometimes grab the wrong thing" only makes sense if punching an open
-   * cell is the eat action.
+   * A free-roaming Enemy (a street Guardsman mid-run, or a helicopter dipped
+   * low enough to reach) is checked next, same box, same reasoning — see
+   * Game.enemyTargetFor. [INFERRED — new this session, 13-inferred-items.md
+   * #34/#35.]
+   *
+   * Failing both of those, a human occupying the targeted building cell
+   * takes priority over a window Guardsman, which takes priority over a
+   * Pickup, which takes priority over wall damage — see interactWithHuman
+   * for what a human does with the punch. If the targeted cell is open and
+   * has an item sitting in it instead, the punch eats/grabs the item —
+   * §4.3's "because punching is fast, a greedy player will sometimes grab
+   * the wrong thing" only makes sense if punching an open cell is the eat
+   * action.
    */
   resolvePunch(game) {
     const streetHuman = game.humanTargetFor(this);
     if (streetHuman) return this.interactWithHuman(streetHuman, game);
 
+    const streetEnemy = game.enemyTargetFor(this);
+    if (streetEnemy) { streetEnemy.consume(this); return 'destroyEnemy'; }
+
     const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
     if (!target) return null;
     const human = target.building.humanAt(target.col, target.row);
     if (human) return this.interactWithHuman(human, game);
+    const enemy = target.building.enemyAt(target.col, target.row);
+    if (enemy) { enemy.consume(this); return 'eatEnemy'; }
     const pickup = target.building.pickupAt(target.col, target.row);
     if (pickup) { pickup.consume(this); return 'eat'; }
     // The return value is the §6 break kind ('partial' / 'full'). Nothing
@@ -1627,10 +2267,10 @@ class Monster extends Entity {
    * 01-monsters §2.3 — a punch connected with a human. This monster's own
    * designated victim, while still grabbable and while this monster isn't
    * already holding someone, is grabbed and held instead of eaten outright;
-   * anyone else — a plain civilian, the Session-6 soldier placeholder, or
-   * the *wrong* monster's designated victim — is just eaten, same as a food
-   * Pickup. "Each monster can grab only its own designated victim; the
-   * wrong victim is eaten ... instead of held" (SESSION-PLAN Session 5).
+   * anyone else — a plain civilian, or the *wrong* monster's designated
+   * victim — is just eaten, same as a food Pickup. "Each monster can grab
+   * only its own designated victim; the wrong victim is eaten ... instead
+   * of held" (SESSION-PLAN Session 5).
    */
   interactWithHuman(human, game) {
     if (!human.alive || human.state === HumanState.HELD) return null;
@@ -2250,6 +2890,17 @@ function drawDebug(game) {
     lines.push('HUMANS ' + humans.length +
       '  window ' + counts.WINDOW_IDLE + '  fleeing ' + counts.FLEEING + '  held ' + counts.HELD);
   }
+  // Session 6 readout: Guardsmen/helicopters in play and their behavior, plus
+  // live projectiles. Goes away with the rest of the debug strip in Session 8.
+  const enemies = game.entities.ofType(Enemy);
+  if (enemies.length) {
+    const windowG = enemies.filter(function (e) { return e instanceof Guardsman && e.variant === 'WINDOW'; }).length;
+    const streetG = enemies.filter(function (e) { return e instanceof Guardsman && e.variant === 'STREET'; }).length;
+    const heli = enemies.filter(function (e) { return e instanceof Helicopter; });
+    lines.push('ENEMIES ' + enemies.length + '  guardWin ' + windowG + '  guardStreet ' + streetG +
+      '  heli ' + heli.map(function (h) { return h.mode + '/' + h.behavior; }).join(',') +
+      '  PROJECTILES ' + game.entities.ofType(Projectile).length);
+  }
   drawDebugHealthBars(game);
   // Session 3 readout: per-building structure %, state, and who owns the
   // collapse. Goes away with the rest of the debug strip in Session 8.
@@ -2341,6 +2992,14 @@ class Game {
     this.streetSpawnCounter = 0;
     this.holdSeed = 0;
 
+    /* 04-military-hazards §5.1 — SpawnDirector cadence timers and its own
+       deterministic pseudo-random counter (same no-RNG convention as
+       `holdSeed` above). Reset per day. */
+    this.windowGuardsmanTimer = 0;
+    this.streetGuardsmanTimer = 0;
+    this.helicopterTimer = 0;
+    this.spawnSeed = 0;
+
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
     for (let i = 0; i < CONFIG.players.maxPlayers; i++) {
@@ -2429,6 +3088,10 @@ class Game {
     this.humanSpawnTimer = 0;
     this.streetSpawnCounter = 0;
     this.holdSeed = 0;
+    this.windowGuardsmanTimer = 0;
+    this.streetGuardsmanTimer = 0;
+    this.helicopterTimer = 0;
+    this.spawnSeed = 0;
     this.spawnBuildings();
     this.spawnMonsters();
   }
@@ -2467,6 +3130,94 @@ class Game {
     const fromLeft = this.streetSpawnCounter % 2 === 0;
     const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
     this.entities.add(Human.spawnOnStreet('CIVILIAN', x, fromLeft ? 1 : -1));
+  }
+
+  /**
+   * 04-military-hazards §5.1 — a deterministic stand-in for Math.random(),
+   * same trick as `nextHoldTime`, kept on its own counter/seed so the two
+   * systems' sequences don't interfere with each other.
+   */
+  nextSpawnFrac() {
+    this.spawnSeed++;
+    return (this.spawnSeed * 2654435761) % 1000 / 1000;
+  }
+
+  /**
+   * 10-architecture §11.3 SpawnDirector — "Present every day: National
+   * Guardsmen and helicopters." Three independent cadence timers, each
+   * capped at its own `CONFIG.spawnDirector.max*` concurrent count. Day/
+   * difficulty scaling (§5.2) is Session 7/9's job; this just keeps a
+   * steady trickle going per `CONFIG.spawnDirector`.
+   */
+  updateSpawnDirector(dt) {
+    const S = CONFIG.spawnDirector;
+
+    this.windowGuardsmanTimer -= dt;
+    if (this.windowGuardsmanTimer <= 0) {
+      this.windowGuardsmanTimer = S.guardsmanWindowInterval;
+      this.trySpawnWindowGuardsman();
+    }
+
+    this.streetGuardsmanTimer -= dt;
+    if (this.streetGuardsmanTimer <= 0) {
+      this.streetGuardsmanTimer = S.guardsmanStreetInterval;
+      this.trySpawnStreetGuardsman();
+    }
+
+    this.helicopterTimer -= dt;
+    if (this.helicopterTimer <= 0) {
+      this.helicopterTimer = S.helicopterInterval;
+      this.trySpawnHelicopter();
+    }
+  }
+
+  /** Picks a still-standing building and, within it, a free INTACT/CRACKED
+   * cell — both deterministically (`nextSpawnFrac`) — for a new window
+   * Guardsman. Skips the roll entirely if nothing qualifies right now. */
+  trySpawnWindowGuardsman() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Guardsman).filter(function (g) { return g.alive && g.variant === 'WINDOW'; });
+    if (active.length >= S.maxWindowGuardsmen) return;
+
+    const standing = this.buildings.filter(function (b) { return b.standing; });
+    if (!standing.length) return;
+    const building = standing[Math.floor(this.nextSpawnFrac() * standing.length) % standing.length];
+
+    const candidates = [];
+    for (let r = 0; r < building.rows; r++) {
+      for (let c = 0; c < building.cols; c++) {
+        const cell = building.cellAt(c, r);
+        if ((cell.state === CellState.INTACT || cell.state === CellState.CRACKED) &&
+            !cell.pickup && !cell.human && !cell.enemy) candidates.push({ col: c, row: r });
+      }
+    }
+    if (!candidates.length) return;
+    const pick = candidates[Math.floor(this.nextSpawnFrac() * candidates.length) % candidates.length];
+    building.spawnEnemyWindow(pick.col, pick.row, this);
+  }
+
+  /** Spawns at a screen edge, targeting whichever standing building is
+   * nearest that edge — same shape as `updateHumanSpawning`'s street
+   * civilians, but a run destination instead of a cross-and-despawn. */
+  trySpawnStreetGuardsman() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Guardsman).filter(function (g) { return g.alive && g.variant === 'STREET'; });
+    if (active.length >= S.maxStreetGuardsmen) return;
+
+    const standing = this.buildings.filter(function (b) { return b.standing; });
+    if (!standing.length) return;
+    const fromLeft = this.nextSpawnFrac() < 0.5;
+    const target = fromLeft ? standing[0] : standing[standing.length - 1];
+    const x = fromLeft ? CONFIG.world.leftBound - 16 : CONFIG.world.rightBound + 16;
+    this.entities.add(Guardsman.spawnOnStreet(x, fromLeft ? 1 : -1, target));
+  }
+
+  trySpawnHelicopter() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Helicopter).filter(function (h) { return h.alive; });
+    if (active.length >= S.maxHelicopters) return;
+    const fromLeft = this.nextSpawnFrac() < 0.5;
+    this.entities.add(Helicopter.spawn(fromLeft, CONFIG.enemies.helicopter.behaviorMode));
   }
 
   /** §7 day clear: every building on the board is rubble. Session 9 acts on it. */
@@ -2585,6 +3336,70 @@ class Game {
       if (area > bestArea) { best = h; bestArea = area; }
     }
     return best;
+  }
+
+  /**
+   * 04-military-hazards §5.1 — the free-roaming (not window-anchored) Enemy
+   * a punch connects with, if any: a street Guardsman mid-run/plant, or a
+   * helicopter dipped low enough during its strafing dive. Same shape as
+   * `humanTargetFor` — tested against `getPunchBox()`, best-overlap wins.
+   * Window Guardsmen are excluded here; they're found the cell-anchored way
+   * (`Building.enemyAt`), same as Human/Pickup.
+   */
+  enemyTargetFor(monster) {
+    const box = monster.getPunchBox();
+    if (!box) return null;
+    let best = null, bestArea = 0;
+    const enemies = this.entities.ofType(Enemy);
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (!e.alive) continue;
+      if (e instanceof Guardsman && e.variant === 'WINDOW') continue;
+      const ox = Math.min(box.x + box.w, e.right) - Math.max(box.x, e.left);
+      const oy = Math.min(box.y + box.h, e.bottom) - Math.max(box.y, e.top);
+      if (ox <= 0 || oy <= 0) continue;
+      const area = ox * oy;
+      if (area > bestArea) { best = e; bestArea = area; }
+    }
+    return best;
+  }
+
+  /** 04-military-hazards §5.1 — the closest live, non-defeated monster to a
+   * point, within `maxRange` px, for a window Guardsman's fire-control. */
+  nearestMonster(x, y, maxRange) {
+    let best = null, bestDist = maxRange;
+    const monsters = this.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m.defeated) continue;
+      const d = Math.hypot(m.x - x, m.y - y);
+      if (d <= bestDist) { best = m; bestDist = d; }
+    }
+    return best;
+  }
+
+  /** The still-standing building whose frontage contains x, if any — a
+   * falling bomb's "is there a roof under me" check. */
+  buildingAt(x) {
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (b.standing && x >= b.left && x <= b.right) return b;
+    }
+    return null;
+  }
+
+  /** The first live, non-defeated monster a Projectile's bounding box
+   * overlaps, if any — a direct hit for bullets/dynamite/bombs. */
+  monsterHitBy(projectile) {
+    const monsters = this.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m.defeated) continue;
+      const ox = Math.min(projectile.right, m.right) - Math.max(projectile.left, m.left);
+      const oy = Math.min(projectile.bottom, m.bottom) - Math.max(projectile.top, m.top);
+      if (ox > 0 && oy > 0) return m;
+    }
+    return null;
   }
 }
 
@@ -2712,6 +3527,7 @@ Game.prototype.handlers = {
          buildings → collisions → eating/pickups → score/health → day-clear. */
       game.entities.update(dt, game);
       game.updateHumanSpawning(dt);
+      game.updateSpawnDirector(dt);
       updateCrossingTimer(game, dt);
     },
     draw(game, alpha) {
@@ -2817,7 +3633,7 @@ function boot() {
   window.RAMPAGE = {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
-    Human, HumanRole, HumanState,
+    Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
   };
   return game;
 }

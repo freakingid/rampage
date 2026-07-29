@@ -1,15 +1,15 @@
 # Rampage Clone — STATUS
 
 **Phase:** 1 (faithful replica)
-**Last updated:** 2026-07-29 — end of Session 5
-**Last session:** Session 5 — Civilians & designated victims
-**Next session:** Session 6 — Military A: Guardsmen & helicopters
+**Last updated:** 2026-07-29 — end of Session 6
+**Last session:** Session 6 — Military A: Guardsmen & helicopters
+**Next session:** Session 7 — Military B: tanks, police, paratroopers, lightning
 
 ---
 
 ## Current state
 
-**Playable?** Yes, and now the city has people in it. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. Punching open a wall section reveals whatever's behind it — food heals, bad items and live electrical hurt, wall dynamite has a fuse, a photographer or bathtub bather will knock the monster off if not eaten fast enough, and now sometimes a civilian or a monster's own designated victim instead of an item. Eating any civilian heals; grabbing your own designated victim holds them until they struggle free, after which they're just another civilian to eat. Civilians also flee across the street on their own. Energy hitting zero reverts the monster to a human placeholder that walks off screen. Still no score, no enemies yet, so nothing shoots back.
+**Playable?** Yes, and now the military shoots back. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. Punching open a wall section reveals whatever's behind it — food heals, bad items and live electrical hurt, wall dynamite has a fuse, a photographer or bathtub bather will knock the monster off if not eaten fast enough, and sometimes a civilian or a monster's own designated victim instead of an item. Eating any civilian heals; grabbing your own designated victim holds them until they struggle free, after which they're just another civilian to eat. Civilians also flee across the street on their own. National Guardsmen now pop out of windows to shoot and lob dynamite (eating one removes the threat and heals, same as a civilian) — unless the monster they're aiming at is currently holding its designated victim, in which case they hold fire. A second Guardsman variant runs in from the street edge, plants a demolition charge at a building's base, and leaves the building to come down on its own timer — a collapse that pays no one, since it wasn't a punch. A helicopter flies over every so often, either diving down for a strafing run or (toggle one CONFIG flag) making a level bombing pass instead; both a bomb and a demolition charge can bring a building down without crediting the player. Energy hitting zero reverts the monster to a human placeholder that walks off screen. Still no score, no tanks/police/paratroopers/lightning yet.
 
 **What exists:**
 - `index.html` — the game. Single self-contained file, no build step, opens directly in a browser.
@@ -30,8 +30,8 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 | Buildings & climbing | ✅ `Building` cell grid + hardcoded 5-building day + full ground↔face↔roof traversal |
 | Destruction & collapse | ✅ punch damage from ground/face, STANDING→SHAKING→RUBBLE, roof-drop, dust puff, fall damage, `causedBy` attribution |
 | Eating & health | ✅ per-monster energy bar, `applyDamage`/`heal` funnel, `Pickup` entities (food/bad/electrical/dynamite/photographer/bather/neutral) revealed on punch, defeat → revert-to-human → walk-off, debug health bars |
-| Civilians & designated victims | ✅ `Human` entity (civilian/designated-victim/window-soldier-placeholder roles), window reveal shared with Pickup, street-fleeing spawner, grab/hold/struggle-free/eat, `Monster.isHoldingVictim` hook for Session 6 |
-| Military — Guardsmen, helicopters | ⬜ not started |
+| Civilians & designated victims | ✅ `Human` entity (civilian/designated-victim roles), window reveal shared with Pickup, street-fleeing spawner, grab/hold/struggle-free/eat, `Monster.isHoldingVictim` |
+| Military — Guardsmen, helicopters | ✅ `Enemy` base + `behavior` field, `Guardsman` (window: shoot/throw dynamite/edible; street: run-and-plant-a-charge), `Helicopter` (strafe + bomb, CONFIG-flag-selected), `Projectile` (bullet/dynamite/bomb/charge), `SpawnDirector` cadences, third-party collapse attribution |
 | Military — tanks, police, paratroopers, lightning | ⬜ not started |
 | Scoring & HUD | 🟨 3-column HUD strip reserved (names only). No score, no energy bars. Break kinds and collapse attribution are recorded and waiting for Session 8 |
 | Day system & progression | ⬜ not started |
@@ -41,6 +41,19 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 ---
 
 ## What changed last session
+
+Session 6 — Guardsmen, helicopters and their munitions, all inside `index.html`:
+
+- **`CONFIG.enemies` and `CONFIG.spawnDirector`** (§5.1) — every number the GDD explicitly says is undocumented: window/street Guardsman timing and range, the demolition charge's fuse, the helicopter's cruise/dive altitudes and speeds, all three projectile flavors' speeds/blast radii, and the three SpawnDirector cadences. `CONFIG.health.damage.bomb = 25` is the one new entry in the Session-4 damage table (`bullet`/`dynamiteThrown` were already sitting there waiting). All **[INFERRED]** — `13-inferred-items.md #33`.
+- **`Enemy extends Entity`** (10-architecture.md §11.3) — a thin base class holding only a `kind` and a `behavior` string, no shared state machine. `Guardsman` and `Helicopter` both extend it.
+- **`Guardsman extends Enemy`** (§5.1) — one class, two spawn shapes, same pattern Session 5 used for `Human`: `variant: 'WINDOW'` pops from a building cell (picked by SpawnDirector, not revealed by punching — it climbs out on its own initiative) and fires a bullet or lobs dynamite on an interval at whichever monster is nearest and in range; `variant: 'STREET'` spawns at a screen edge, runs for the nearest standing building's base, and plants a `Projectile('CHARGE')` once there. Eating a window Guardsman (the same single grab/eat punch action Pickup/Human already use) heals the monster and removes it; a street Guardsman can be punched down mid-run or mid-plant but doesn't heal on destruction — the GDD only documents healing for the window row. **`Monster.isHoldingVictim` is finally read**: a window Guardsman skips firing at a monster currently holding its designated victim, checked per-target rather than as a global switch — `13-inferred-items.md #7` resolved, `#34` for the rest of the Guardsman guesses.
+- **Session 5's `HumanRole.WINDOW_SOLDIER` placeholder is removed** — 10-architecture.md §11.3 explicitly suggests Guardsman belongs under `Enemy`, and nothing ever spawned the `Human`-based placeholder, so it's gone rather than left dead.
+- **`Helicopter extends Enemy`** (§5.1) — both documented behaviors are implemented, not just one: `mode: 'STRAFE'` flies to mid-screen at a cruise altitude above every rooftop, dives to just above the *tallest* building in the day layout, fires a rapid burst while drifting across, then climbs back out; `mode: 'BOMB'` flies straight across at cruise altitude dropping a bomb on a fixed interval. Which one a newly spawned helicopter uses is decided by `CONFIG.enemies.helicopter.behaviorMode` — the difficulty flag SpawnDirector reads — so toggling one CONFIG value switches behavior immediately; Session 9's day/level system is the intended long-term owner of that flag. A connecting punch destroys either mode outright (no heal), but geometry alone makes that only possible during the STRAFE dive, on the single tallest roof in the layout — `13-inferred-items.md #35`.
+- **`Projectile extends Entity`** (§5.1) — one class, `kind` picks the flavor: `BULLET` (straight line, direct-hit damage), `DYNAMITE` (lobbed arc toward the target's position at throw time, area damage on impact/fuse-out), `BOMB` (dropped straight down from a helicopter, area damage on a monster or cell damage on a building roofline it reaches), `CHARGE` (planted, no motion, clears its building's entire bottom row outright when the fuse ends). **Every building-damaging call passes `byMonster = null`** — the exact convention Session 3's `causedBy: null` was built for — so a charge or a bomb bringing a building down is recorded in `Game.collapseEvents` with `causedBy: null` and pays the 2,500-point bonus to nobody once Session 8 wires up scoring. The demolition charge deliberately clears the *whole* bottom row rather than a partial amount, guaranteeing it can bring a building down by itself via the bottom-row-gone route Session 3 already built, rather than needing several charges to stack damage.
+- **`Building` gained a third cell occupant slot, `enemy`**, alongside `pickup`/`human` — `enemyAt`/`clearEnemyCell`/`spawnEnemyWindow` mirror the existing accessors. `spawnEnemyWindow` only accepts an INTACT or CRACKED cell (needs a wall to pop out of) and is driven by SpawnDirector, not by a punch opening the cell — a genuinely different reveal path from Pickup/Human's.
+- **`Monster.resolvePunch` priority chain extended**, not replaced: street human → street enemy (new) → building-cell human → building-cell enemy (new) → building-cell pickup → wall damage. A street Guardsman or a low helicopter is found the same way a street civilian already was (`Game.enemyTargetFor`, mirroring `humanTargetFor`); a window Guardsman is found the same way a window civilian already was (`Building.enemyAt`, mirroring `humanAt`).
+- **`Game.updateSpawnDirector(dt)`** — three independent cadence timers (window Guardsman, street Guardsman, helicopter), each capped at its own `CONFIG.spawnDirector.max*` concurrent count, plus the query helpers the new entities need: `enemyTargetFor`, `nearestMonster` (Guardsman fire-control target selection), `buildingAt` (a falling bomb's "is there a roof under me" check), `monsterHitBy` (direct-hit resolution for all three moving projectile kinds). All spawn-position/target picks use a new deterministic `Game.nextSpawnFrac()` counter, same no-RNG convention as `nextHoldTime`, kept on its own seed so the two systems' sequences don't interact.
+- **Debug readout** gained an `ENEMIES <n> guardWin <a> guardStreet <b> heli <mode/behavior,...>  PROJECTILES <n>` line. Temporary, same as the rest of the debug strip.
 
 Session 5 — civilians and designated victims, all inside `index.html`:
 
@@ -105,6 +118,32 @@ Session 1 — built `index.html` from scratch:
 - All three monster types produce **byte-identical position/stance/animation traces** over the same scripted input, and the type table contains no stat fields.
 
 Not done in a real browser (none available in this environment) — worth one manual open to confirm it looks right.
+
+---
+
+## Verification — Session 6
+
+Same method as Sessions 1-5: the **real** inline script from `index.html`, loaded into a Node `vm` context under the same hand-rolled DOM/canvas shim, driven tick by tick through the game's own `InputManager` and its real `Building`/`Monster`/`Guardsman`/`Helicopter`/`Projectile` classes. **32 targeted checks, all passing**, plus a 6,000-tick randomized-input fuzz pass (console clean, no non-finite positions).
+
+Against the SESSION-PLAN Session 6 success criteria:
+
+| Criterion | Result |
+|---|---|
+| Guardsmen appear in windows, fire, throw dynamite, and can be eaten to remove the threat | ✅ SpawnDirector produced a window Guardsman within one cadence interval; a 3,000-tick watch confirmed it fires both a `BULLET` and a `DYNAMITE` projectile; a real punch (climbed to the exact cell, aligned per 13-inferred #17's chest-height punch band) removed it and healed the monster by `CONFIG.enemies.guardsman.eatHeal` |
+| Helicopters perform both strafing and bombing runs; toggling the difficulty flag switches behavior | ✅ a `STRAFE`-mode helicopter was observed passing through `APPROACH → DIVE_DOWN → STRAFING → DIVE_UP/EXIT` and firing bullets during the pass; setting `CONFIG.enemies.helicopter.behaviorMode = 'BOMB'` before the next spawn produced a helicopter whose `.mode` was `'BOMB'` and which dropped a `BOMB` projectile while crossing |
+| A demolition charge can bring down a building, and that collapse is *not* credited to the player | ✅ a street Guardsman spawned, ran to a building's base, and planted a charge; the charge's fuse cleared the entire bottom row on expiry: `causedBy === null` and `causeKind === 'demolitionCharge'` in `Game.collapseEvents`, confirmed again independently for a bomb-triggered collapse via the same `byMonster = null` call convention |
+| Holding a designated victim visibly stops Guardsman fire (the Session 5 hook now observable) | ✅ a window Guardsman with a monster in range and `monster.holding` set fired nothing over 4 fire-interval windows; clearing `holding` let it fire again within the next interval — confirmed via both projectile presence and monster energy loss, not projectile presence alone (a point-blank hit resolves and despawns within the same tick it's fired, which the first draft of this check missed) |
+
+Also checked, as regression cover and to validate the new mechanics end-to-end:
+
+- **A street Guardsman and a low-flying helicopter are both destroyable via the free-roaming punch path** (`Game.enemyTargetFor`), a genuinely different code path from the cell-anchored window-Guardsman check above — confirmed neither variant heals the monster on destruction.
+- **A bomb reaching a building's roofline damages a cell** there (confirmed the targeted row's state array actually changed), distinct from a direct hit on a monster.
+- **6,000-tick randomized-input fuzz pass** — all six action keys randomly toggled every tick, `render()` called every frame, zero `console.error` calls, no non-finite entity positions across the whole entity list (buildings, monsters, humans, enemies, projectiles, dust).
+- **Full regression smoke on Sessions 1-5** — building destruction/collapse, the health funnel, and civilian grab/hold/eat all still behave identically; the extended `resolvePunch` priority chain (street human → street enemy → cell human → cell enemy → cell pickup → wall) doesn't change any outcome when no enemy is present, confirmed by the fuzz pass and by every pre-existing eating/punching check still passing unchanged.
+
+**The punch-geometry finding worth recording, since it cost real debugging time:** a monster's body (26px) is wider than one building cell (22px), and `punchTargetRect` reaches *forward from the monster's own centre*, not from its leading edge (13-inferred-items.md #17). Centering a monster exactly on a target cell's column therefore biases the punch rect into the *next* column over, not the one the monster is standing on — reproducible and consistent with #17's existing note about the outermost column, just not previously exercised against a precisely-aligned synthetic target. Aligning to the cell's *leading edge* instead of its centre is what makes a hand-placed target reliably reachable; this only matters for synthetic/test positioning; normal climb-and-punch play never needs this precision since the player just nudges left/right until the punch connects.
+
+Not opened in a real browser (none available in this environment) — worth one manual open, especially to eyeball a Guardsman popping from a window, the helicopter's strafing dive against the tallest building's roofline, and a demolition charge's fuse-flash warning.
 
 ---
 
@@ -237,15 +276,16 @@ A frame was also rasterised from the game's real draw calls to confirm it looks 
 
 ## What's next
 
-**Session 6 — Military A: Guardsmen & helicopters.** The two threats present on every day: `Enemy` base with a `behavior` field, `Projectile` (bullets, dynamite, bombs), National Guardsman (window pop, street demolition variant, edible from a window), Helicopter (strafe + bomb, difficulty-flagged), third-party collapse attribution, and a `SpawnDirector`.
+**Session 7 — Military B: tanks, police, paratroopers, lightning.** Fill out the threat roster and the escalation curve: Tank (slow, armored, heavy shells with big knockback), Police car (tank but faster), Paratrooper (lands on a roof, defends it, rapid-fires while a monster is on that building), Lightning cloud (drifts over, fires bolts), environmental weapons (manhole cover / flower pot / safe, knocked loose and dropped on ground/air units), and the escalation scalars along §5.2's five axes.
 
 Seams already in place for it:
-- **`Monster.isHoldingVictim` already exists** (Session 5) — a Guardsman's fire-control check is just reading this boolean on whichever monster it's targeting (or globally; 13-inferred-items.md #7 leaves that scope decision to this session).
-- **`Human`'s `WINDOW_SOLDIER` role and CONFIG entry already exist** but nothing spawns one — Session 6 either extends `Human` with the actual soldier behavior (shoot/throw dynamite) or gives it its own `Enemy` subclass instead; 10-architecture.md §11.3 suggests Guardsman belongs under `Enemy`, so `Human`'s `WINDOW_SOLDIER` role may end up unused/removed in favor of an `Enemy`-based window Guardsman — worth deciding deliberately rather than defaulting.
-- **`Building.causedBy: null`** (Session 3) is exactly what makes a demolition-charge collapse pay nobody once Session 8 wires up scoring.
-- **`CONFIG.health.damage.bullet` / `dynamiteThrown`** (Session 4) are already named and valued, just not called by anything yet.
+- **`Enemy` (base class, `behavior` field) and `Projectile` (`kind`-flavored) already exist** (Session 6) — Tank/Police/Paratrooper/Lightning are new `Enemy` subclasses; shells are a new `Projectile` kind (or a `Tank`/`Police`-owned variant with knockback, since nothing so far applies knockback to a monster — that's new plumbing Session 7 needs, `Monster.knockOff`'s kinematics are the closest existing precedent but that's building-anchored, not a free push in an arbitrary direction).
+- **`Game.enemyTargetFor` / `Game.monsterHitBy` / `Game.buildingAt`** (Session 6) are generic over any `Enemy`/`Projectile` — a Tank or Police car reuses the exact same punch-destroys-it and projectile-hits-monster paths a street Guardsman and a bullet already use. Paratroopers landing "on a roof" will want a new building-relative query, closer to `roofLandingAt` than anything else that exists.
+- **`Game.updateSpawnDirector` / `CONFIG.spawnDirector`** (Session 6) is the place Tank/Police/Paratrooper/Lightning cadences slot in — same three-timer shape, more timers.
+- **`CONFIG.health.damage.shell` / `tankShell` / `lightning`** (Session 4) are already named and valued, just not called by anything yet.
+- **The escalation axes themselves (§5.2) are still entirely unbuilt** — Session 6 kept every cadence a flat per-day constant (`CONFIG.spawnDirector`, `CONFIG.enemies.helicopter.behaviorMode`) since there's no day/level system yet to scale them against. Session 7's "raising the difficulty scalar visibly increases unit count/aggression" criterion needs at least a manual scalar knob, since Session 9 (real day data) is still two sessions out.
 
-**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents`, `damageCell`'s return value, and now needs a hook for civilian/victim/pickup scoring too — eating a civilian is 500 points, the designated-victim hold is 4,000–6,000 per `05-scoring.md`), items/humans surviving a building's collapse into rubble (13-inferred-items.md #26 — §3.3 says rubble can hold items; deferred again), tanks/police/paratroopers/lightning (Session 7), day-clear transition (Session 9).
+**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents`, `damageCell`'s return value, and now needs a hook for civilian/victim/pickup/enemy-kill scoring too — eating a civilian is 500 points, the designated-victim hold is 4,000–6,000, per `05-scoring.md`), items/humans surviving a building's collapse into rubble (13-inferred-items.md #26 — §3.3 says rubble can hold items; deferred again), day-clear transition and real per-day difficulty data (Session 9).
 
 Success criteria are in `docs/sessions/SESSION-PLAN.md`.
 
@@ -260,10 +300,10 @@ Anything implemented from an inference rather than a confirmed source gets logge
 | 1 | Damage values, health-bar size, regen amounts | `CONFIG.health`, `CONFIG.pickups` | **filled in Session 4.** `maxEnergy = 100`; fall damage moved here from `CONFIG.monster.fallDamage`; per-item heal/damage values in `CONFIG.pickups.definitions`; knock-off speeds; walk-off speed. Retune all of it in Session 12 |
 | 2 | Movement speed, jump arc, punch cadence | `CONFIG.monster` | **first-pass values set in Session 1** — walk 84 px/s, jump 270 px/s vs gravity 900 (≈40 px apex, 0.6 s airtime), punch 0.20 s. All guesses; retune in Session 12 |
 | 3 | **Building collapse threshold** | `CONFIG.buildings` | **chosen in Session 3, and the biggest guess in the session.** `collapseStructureFraction 0.5` · `collapseOnBottomRowGone true` · `roofDropStructureFraction 0.8` · `shakeDuration 1.2 s`. The GDD says outright that the real trigger is undocumented and proposes this model; the four numbers are mine. Measured consequences are in the Verification section. Retune in Session 12 |
-| 4 | Enemy fire rates, projectile speeds, spawn cadences | `CONFIG` | not yet implemented |
+| 4 | Enemy fire rates, projectile speeds, spawn cadences | `CONFIG` | **filled in for Guardsmen/helicopters in Session 6** — see row 32. Tanks/police/paratroopers/lightning still pending (Session 7) |
 | 5 | Health meter as bar vs. descriptive labels | HUD | decided: plain bar for Phase 1 |
 | 6 | Monster palettes / exact colors | `CONFIG.monsterTypes` | **placeholders picked in Session 1** (brown / green / grey) — distinct, not claimed accurate. Deferred to art pass |
-| 7 | "Holding designated victim → only Guardsmen stop firing" | civilians | single-source claim, implement as written |
+| 7 | "Holding designated victim → only Guardsmen stop firing" | civilians | **resolved in Session 6**: per-target, not global — a window Guardsman checks `isHoldingVictim` only on the specific monster it's about to fire at, not as a "nobody fires anywhere" switch |
 | 8 | Monster-vs-monster "punch forces drop" | multiplayer | implement drop-on-hit, verify later |
 | 9 | **Movement during a punch** — new in Session 1 | `Monster.update` | GDD is silent. Punch **roots** the monster on the ground; airborne momentum kept. **Session 2 extended the same rule to cling and roof.** Verify |
 | 10 | **Air control** — new in Session 1 | `CONFIG.monster.airControl` | 0.9 of walk speed while airborne. No documented rule. Interacts with jump-to-grab — worked out fine, gaps are crossable |
@@ -288,6 +328,9 @@ Anything implemented from an inference rather than a confirmed source gets logge
 | 29 | **Hold-time range and its pseudo-random source** | `CONFIG.humans.holdTimeMin/Max`, `Game.nextHoldTime` | §2.3 says "a random hold time" with no range; 3–6 s is a guess. Uses the same deterministic-hash "no RNG" trick as `windowLit`/`spawnCycle`, not `Math.random()`, so reloads and the headless harness stay reproducible |
 | 30 | **Window occupancy split between Pickup and Human** | `CONFIG.humans.windowOccupancyCycle`, `Building.spawnOccupant` | Extends #20's mechanism rather than replacing it: most opened cells still defer to the Pickup cycle, a minority reveal a civilian/victim instead. Both the ratio and the cycle order are guesses |
 | 31 | **A street human in the way is hit before the wall behind it** | `Monster.resolvePunch`, `Game.humanTargetFor` | Not documented, but testing showed every gap in `CONFIG.buildings.dayLayout` is narrower than a full punch's reach — checking the wall first would make street civilians nearly unreachable. Free-roaming humans are checked first, against the narrower `getPunchBox()` |
+| 32 | **Enemy fire rates, projectile speeds, spawn cadences, bomb damage** — new in Session 6 | `CONFIG.enemies`, `CONFIG.spawnDirector`, `CONFIG.health.damage.bomb` | Fills in the explicit §5.1 gap (was row 4 above). Every Guardsman/helicopter/projectile/SpawnDirector number is a first-pass guess. Retune in Session 12 |
+| 33 | **Guardsman: window-spawn wall requirement, street-variant destructibility/no-heal, thrown-dynamite kinematics** — new in Session 6 | `Building.spawnEnemyWindow`, `Guardsman.consume`, `Projectile.spawnDynamite` | A window Guardsman needs an INTACT/CRACKED cell to pop from; the street variant can be punched down but doesn't heal on destruction (only the window row is documented as edible-for-health); thrown dynamite lobs toward the target's position at throw time with no homing and undocumented throw speed/arc |
+| 34 | **Helicopter: dive/cruise altitudes, destructibility window, difficulty flag, bomb-vs-building kinematics** — new in Session 6 | `CONFIG.enemies.helicopter`, `Helicopter.updateStrafe`, `Projectile.hitBuilding` | Cruise altitude sits above every rooftop; the strafing dive altitude sits just above the *tallest* building in the day layout, so only a monster on that specific roof can ever punch it down — everywhere else it's geometrically unreachable, which is the "destroyed on its approach" window. `behaviorMode` CONFIG flag picks strafe vs. bomb per spawn; Session 9's day system is the intended long-term driver. A bomb hitting a roofline damages whatever cell is exposed there and falls straight down with no horizontal carry |
 
 Port decisions (not fidelity claims, recorded so they aren't mistaken for one): keyboard mapping, and the 512×384 logical playfield (MCR-3 was 512×480). Both listed in `docs/design/13-inferred-items.md`.
 
@@ -303,6 +346,7 @@ Port decisions (not fidelity claims, recorded so they aren't mistaken for one): 
 | 3 | Destruction & collapse | 2026-07-28 | ✅ all success criteria verified (123 headless checks) |
 | 4 | Eating & health | 2026-07-29 | ✅ all success criteria verified (64 headless checks) |
 | 5 | Civilians & designated victims | 2026-07-29 | ✅ all success criteria verified (59 headless checks + 8,000-tick fuzz) |
+| 6 | Military A: Guardsmen & helicopters | 2026-07-29 | ✅ all success criteria verified (32 headless checks + 6,000-tick fuzz) |
 
 ---
 
@@ -327,4 +371,11 @@ _(Anything the next session needs to know that isn't obvious from the code — d
 - **`Game.collapseEvents` is never drained.** It's reset per day in `startDay()` and grows by one entry per collapse (max five a day at the moment). Session 8 should decide whether the ScoreSystem consumes it or just reads it.
 - **No spatial partitioning, no camera, no audio, no `LevelData`** — deliberately not built, since no Phase-1 mechanic needs them yet. `Game.faceTargetFor` / `roofLandingAt` / `cellTargetFor` are linear scans over five buildings; that's the whole spatial system and it's enough.
 - **The collapse sound, eat sound, and zap sound are all missing, obviously** — Session 11 owns audio. The dust puff is the only collapse feedback right now besides the shake; pickups have no sound or animation on consume, they just vanish.
-- Sessions 1-4 are committed; Session 5's changes are not committed yet (as of this writing).
+- Sessions 1-5 are committed; Session 6's changes are not committed yet (as of this writing).
+- **`window.RAMPAGE` now also exports `Enemy`, `Guardsman`, `Helicopter`, `Projectile`** for console poking and the headless harness.
+- **A new building-cell occupant slot, `enemy`**, joins `pickup`/`human` from prior sessions — anything that adds a fourth kind of cell content (none currently planned) should extend this same three-slot pattern rather than inventing a new one.
+- **`Monster.resolvePunch`'s priority chain is now five deep**: street human → street enemy → cell human → cell enemy → cell pickup → wall damage. Session 7's tanks/police/paratroopers are all free-roaming or roof-anchored, not cell-anchored, so they most likely extend the "street enemy" (`Game.enemyTargetFor`) side of this, not the cell side — a paratrooper standing on a roof will need its own reachability query, closer in shape to `roofLandingAt` than to anything punch-priority related.
+- **SpawnDirector's timers all start at 0** (reset in `startDay()`), so the first spawn roll of every day fires on literally the first tick that update order reaches it — same convention `humanSpawnTimer` already used. Not a bug; matches existing project convention.
+- **Two "no-RNG" deterministic counters now exist side by side**: `Game.holdSeed`/`nextHoldTime()` (Session 5, victim hold times) and `Game.spawnSeed`/`nextSpawnFrac()` (Session 6, everything SpawnDirector picks — which building, which cell, fire-or-throw, helicopter spawn side). Kept separate on purpose so one system's sequence can't shift the other's.
+- **Helicopter altitudes are keyed to the *current* `CONFIG.buildings.dayLayout`, not a fixed constant** — `strafe.diveAltitudeY` (150) was picked by hand to sit just above the tallest building in the *current* hardcoded layout (the 9-row building, roof at y=146). If Session 9's `LevelData` ever authors a taller building, this needs recomputing the same way `13-inferred-items.md #15`'s jump-apex constraint already documents a similar "the layout and a CONFIG constant must agree" trap for building heights.
+- **A demolition charge and a bomb hitting a building both call `Building.damageCell` with `byMonster = null`, never a monster reference** — this is the entire mechanism that keeps `causedBy` null for §6 attribution. Any Session 7 unit that can also damage a building (a stray tank/police shell going wide, if that's ever added) needs to follow the same convention deliberately, not default to passing whatever unit fired it.

@@ -1,15 +1,15 @@
 # Rampage Clone — STATUS
 
 **Phase:** 1 (faithful replica)
-**Last updated:** 2026-07-29 — end of Session 4
-**Last session:** Session 4 — Eating & health
-**Next session:** Session 5 — Civilians & designated victims
+**Last updated:** 2026-07-29 — end of Session 5
+**Last session:** Session 5 — Civilians & designated victims
+**Next session:** Session 6 — Military A: Guardsmen & helicopters
 
 ---
 
 ## Current state
 
-**Playable?** Yes, and now there's something to manage. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. Punching open a wall section reveals an item — food heals, bad items and live electrical hurt, wall dynamite has a fuse, a photographer or bathtub bather will knock the monster off the building if not eaten fast enough. Energy hitting zero reverts the monster to a human placeholder that walks off screen. Still no score, no enemies, no civilians yet, so nothing else pushes back.
+**Playable?** Yes, and now the city has people in it. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. Punching open a wall section reveals whatever's behind it — food heals, bad items and live electrical hurt, wall dynamite has a fuse, a photographer or bathtub bather will knock the monster off if not eaten fast enough, and now sometimes a civilian or a monster's own designated victim instead of an item. Eating any civilian heals; grabbing your own designated victim holds them until they struggle free, after which they're just another civilian to eat. Civilians also flee across the street on their own. Energy hitting zero reverts the monster to a human placeholder that walks off screen. Still no score, no enemies yet, so nothing shoots back.
 
 **What exists:**
 - `index.html` — the game. Single self-contained file, no build step, opens directly in a browser.
@@ -30,7 +30,7 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 | Buildings & climbing | ✅ `Building` cell grid + hardcoded 5-building day + full ground↔face↔roof traversal |
 | Destruction & collapse | ✅ punch damage from ground/face, STANDING→SHAKING→RUBBLE, roof-drop, dust puff, fall damage, `causedBy` attribution |
 | Eating & health | ✅ per-monster energy bar, `applyDamage`/`heal` funnel, `Pickup` entities (food/bad/electrical/dynamite/photographer/bather/neutral) revealed on punch, defeat → revert-to-human → walk-off, debug health bars |
-| Civilians & designated victims | ⬜ not started — victim ids are in `CONFIG.monsterTypes` |
+| Civilians & designated victims | ✅ `Human` entity (civilian/designated-victim/window-soldier-placeholder roles), window reveal shared with Pickup, street-fleeing spawner, grab/hold/struggle-free/eat, `Monster.isHoldingVictim` hook for Session 6 |
 | Military — Guardsmen, helicopters | ⬜ not started |
 | Military — tanks, police, paratroopers, lightning | ⬜ not started |
 | Scoring & HUD | 🟨 3-column HUD strip reserved (names only). No score, no energy bars. Break kinds and collapse attribution are recorded and waiting for Session 8 |
@@ -41,6 +41,17 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 ---
 
 ## What changed last session
+
+Session 5 — civilians and designated victims, all inside `index.html`:
+
+- **`CONFIG.humans`** (§2.3/§4.2) — a `Human` size that fits inside one building cell, `civilianHeal`, hold offsets and a `holdTimeMin/Max` range for the grab/hold, a `windowOccupancyCycle` (deterministic, same trick as `CONFIG.pickups.spawnCycle`) deciding which opened cells reveal a civilian/victim instead of a Pickup, a `street` block for the fleeing-civilian spawner, and `types` for `CIVILIAN`, the three designated victims (`WOMAN`/`MIDDLE_AGED_MAN`/`BUSINESSMAN`, each carrying `victimOf`), and a `WINDOW_SOLDIER` placeholder Session 6 will actually spawn.
+- **`Human extends Entity`** (§2.3, §4.2) — one class for civilians, designated victims and the soldier placeholder, with a `role` flag per 10-architecture.md §11.3, exactly as planned. Two spawn shapes: `spawnInWindow` (anchored to a building cell, revealed on the HOLE transition — same mechanism Pickup uses) and `spawnOnStreet` (already fleeing across the street, despawns off the far edge). States: `WINDOW_IDLE`, `FLEEING`, `HELD`.
+- **Building reveal extended, not replaced** — `damageCell`'s HOLE branch now calls `spawnOccupant` instead of `spawnPickup` directly; `spawnOccupant` rolls the new `windowOccupancyCycle` and defers to the *existing* `spawnPickup` on an `'ITEM'` token, or calls the new `spawnHuman` otherwise. Session 4's pickup density and exact indexing are untouched for the `'ITEM'` majority. Cells gained a `human` slot alongside `pickup`; `humanAt`/`clearHumanCell` mirror the Pickup equivalents.
+- **Grab/hold/struggle/eat (§2.3)** — `Monster.resolvePunch` now checks for a human before a Pickup or wall damage. `Monster.interactWithHuman` is the decision: this monster's own still-grabbable designated victim, while it isn't already holding someone, gets **grabbed** (`Monster.grabHuman` — pulls it out of its window if it had one, starts a random hold timer from `Game.nextHoldTime()`); anyone else (a plain civilian, the *wrong* monster's designated victim, or a re-encountered already-freed victim) gets **eaten** (`Human.consume` → `Monster.heal`), identical to how Pickup already works. While `HELD`, `Human.updateHeld` tracks the monster's position; once the timer runs out, `Human.struggleFree()` drops it onto the street, sets it fleeing, and latches `grabbable = false` so it can never be re-grabbed, only eaten from then on. `Monster.releaseHolding()` (called from both `beginDefeat` and `knockOff`) forces this same release so a defeated or knocked-off monster never leaves an orphaned `HELD` human.
+- **Session 6 hook, built now** (§2.3) — `Monster.holding` / `get isHoldingVictim()`. Nothing reads it yet since Guardsmen don't exist; whether it should be per-monster or global is left for Session 6 to decide (`13-inferred-items.md #7`).
+- **Fleeing street civilians** (00-core-loop §1) — `Game.updateHumanSpawning` spawns a `CIVILIAN` at an alternating screen edge every `CONFIG.humans.street.spawnInterval`, capped at `maxActive` concurrent, already in flight toward the opposite edge; despawns once fully offscreen. No proximity/AI behavior — **[INFERRED]**, `13-inferred-items.md #28`.
+- **A genuine geometry finding, not a design choice made lightly:** the first version of `resolvePunch` checked the building *before* free-roaming humans, matching Pickup's existing precedent. Testing it exposed that every gap in `CONFIG.buildings.dayLayout` between buildings (24–30 px) is narrower than a fully-extended punch's reach (31 px) — meaning a street civilian would almost *never* be reachable, since the wall-reaching rect would always find some building cell first. Flipped the priority: a free-roaming human in the punch's way is now checked first, against the narrower `getPunchBox()` rather than the wall-reaching `punchTargetRect()`. This also reads as the more sensible rule anyway — someone standing between the monster and a wall takes the hit meant for them. **[INFERRED — 13-inferred-items.md #32]**, not confirmed against the arcade.
+- **Debug readout** gained a `HOLDING <type> (Ns)` suffix on the monster line and a `HUMANS <n> window <a> fleeing <b> held <c>` summary line. Temporary, same as the rest of the debug strip.
 
 Session 4 — eating and health, all inside `index.html`:
 
@@ -94,6 +105,30 @@ Session 1 — built `index.html` from scratch:
 - All three monster types produce **byte-identical position/stance/animation traces** over the same scripted input, and the type table contains no stat fields.
 
 Not done in a real browser (none available in this environment) — worth one manual open to confirm it looks right.
+
+---
+
+## Verification — Session 5
+
+Same method as Sessions 1-4: the **real** inline script from `index.html`, loaded into a Node `vm` context under the same hand-rolled DOM/canvas shim, driven tick by tick through the game's own `InputManager` and its real `Building`/`Monster`/`Human` classes. **59 targeted checks, all passing**, plus an 8,000-tick randomized-input fuzz pass (console clean, no NaN positions).
+
+Against the SESSION-PLAN Session 5 success criteria:
+
+| Criterion | Result |
+|---|---|
+| Each monster can grab only its own designated victim; the wrong victim is eaten or punched instead of held | ✅ George grabs a revealed WOMAN (his own victim, per `CONFIG.monsterTypes.GEORGE.designatedVictim`); a revealed BUSINESSMAN (Ralph's victim) is eaten on the same punch instead of held, confirmed via both a direct `interactWithHuman` call and a real end-to-end punch (press-key → `resolvePunch` → `humanTargetFor`) against a street-placed victim |
+| The hold → struggle-free → eat sequence completes without leaving orphaned entities | ✅ held victim tracks the monster tick-by-tick (`holdOffsetX`/`holdOffsetY`), releases itself once `Game.nextHoldTime()`'s timer runs out, becomes `FLEEING` with `grabbable = false`, and a follow-up punch eats it cleanly (`alive = false`, cleared from any building cell). Also confirmed a monster **defeated while holding** releases the victim rather than leaving it stuck `HELD` forever (`Monster.releaseHolding`, called from `beginDefeat`) |
+| Eating a civilian restores health per `CONFIG` | ✅ a plain `CIVILIAN` (window-revealed and street-placed), the wrong-monster's designated victim, and an already-freed former victim all heal the monster by exactly `CONFIG.humans.civilianHeal` through `Monster.heal` |
+| The "Guardsmen stop firing while holding" hook exists even though Guardsmen arrive next session | ✅ `monster.isHoldingVictim` reads `true` for the duration of a hold and `false` again immediately after release (struggle-free, defeat, or knock-off) — nothing consumes it yet, which is the point |
+
+Also checked, as regression cover and to validate the new mechanic end-to-end:
+
+- **Window reveal wiring, through the real `damageCell` → `spawnOccupant` path** (not a mock): confirmed `CONFIG.humans.windowOccupancyCycle` positions really do produce a `WOMAN`/`MIDDLE_AGED_MAN`/`BUSINESSMAN`/`CIVILIAN` `Human` in the targeted cell after the second connecting hit (the same INTACT→CRACKED→HOLE sequence Session 3/4 already exercise), and that an `'ITEM'`-token cell still reveals a `Pickup` exactly as it did before this session — Session 4's item density is unaffected.
+- **Real end-to-end punch routing** (not a direct method call): a street-positioned plain civilian is found and eaten via actual key input through `Monster.resolvePunch` → `Game.humanTargetFor`; a street-positioned designated victim is grabbed (not eaten) through that same real path.
+- **8,000-tick randomized-input fuzz pass** — all six action keys randomly toggled every tick, `render()` called every frame (so `Human.draw()`'s flash-warning branch actually executes), zero `console.error` calls, no non-finite monster positions, and civilians/window and street both got touched during the run.
+- **Full regression smoke on Sessions 1-4** — a single monster crossing the street, climbing, punching a building through its full destroy sequence, and the health funnel all still behave identically; nothing about the `resolvePunch` priority reordering changed a Pickup or wall-damage outcome when no human is present in the punch's path (confirmed by the `'ITEM'`-token check above and the fuzz pass finding no regressions).
+
+Not opened in a real browser (none available in this environment) — worth one manual open, especially to eyeball a held victim's position relative to the monster and the designated-victim accent outline against the rest of the placeholder art.
 
 ---
 
@@ -202,15 +237,15 @@ A frame was also rasterised from the game's real draw calls to confirm it looks 
 
 ## What's next
 
-**Session 5 — Civilians & designated victims.** People in windows: edible, grabbable, and one special victim per monster (woman→George, middle-aged man→Lizzie, businessman→Ralph). Grab/hold/struggle-free/eat sequence; eating a civilian heals per `CONFIG`.
+**Session 6 — Military A: Guardsmen & helicopters.** The two threats present on every day: `Enemy` base with a `behavior` field, `Projectile` (bullets, dynamite, bombs), National Guardsman (window pop, street demolition variant, edible from a window), Helicopter (strafe + bomb, difficulty-flagged), third-party collapse attribution, and a `SpawnDirector`.
 
 Seams already in place for it:
-- **`Monster.heal(amount, source)` already exists** — eating a civilian is another `heal` call with its own source string, same as any food `Pickup`. No new funnel needed.
-- **`Pickup` is a reasonable template for `Human`** but they're deliberately not the same class — a civilian flees, can be grabbed/held (not just eaten in one hit), and needs a role flag (civilian / designated victim). Don't retrofit `Pickup` into it; §01-monsters §2.3 and §03-eating-health together are what define `Human`.
-- **`CONFIG.monsterTypes[id].designatedVictim`** already holds the victim id per monster type (set in Session 1) — Session 5 is what finally reads it.
-- **The "Guardsmen stop firing while holding" hook** (13-inferred-items.md #7) has nowhere to attach yet since Guardsmen don't exist until Session 6 — just leave the flag/behavior ready to be read, same pattern as `causedBy: null`.
+- **`Monster.isHoldingVictim` already exists** (Session 5) — a Guardsman's fire-control check is just reading this boolean on whichever monster it's targeting (or globally; 13-inferred-items.md #7 leaves that scope decision to this session).
+- **`Human`'s `WINDOW_SOLDIER` role and CONFIG entry already exist** but nothing spawns one — Session 6 either extends `Human` with the actual soldier behavior (shoot/throw dynamite) or gives it its own `Enemy` subclass instead; 10-architecture.md §11.3 suggests Guardsman belongs under `Enemy`, so `Human`'s `WINDOW_SOLDIER` role may end up unused/removed in favor of an `Enemy`-based window Guardsman — worth deciding deliberately rather than defaulting.
+- **`Building.causedBy: null`** (Session 3) is exactly what makes a demolition-charge collapse pay nobody once Session 8 wires up scoring.
+- **`CONFIG.health.damage.bullet` / `dynamiteThrown`** (Session 4) are already named and valued, just not called by anything yet.
 
-**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents`, `damageCell`'s return value, and will need a hook for civilian/pickup scoring too), items surviving a building's collapse into rubble (13-inferred-items.md #26 — §3.3 says rubble can hold items; deferred again), third-party collapse sources (Session 6), day-clear transition (Session 9).
+**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents`, `damageCell`'s return value, and now needs a hook for civilian/victim/pickup scoring too — eating a civilian is 500 points, the designated-victim hold is 4,000–6,000 per `05-scoring.md`), items/humans surviving a building's collapse into rubble (13-inferred-items.md #26 — §3.3 says rubble can hold items; deferred again), tanks/police/paratroopers/lightning (Session 7), day-clear transition (Session 9).
 
 Success criteria are in `docs/sessions/SESSION-PLAN.md`.
 
@@ -247,6 +282,12 @@ Anything implemented from an inference rather than a confirmed source gets logge
 | 23 | **Punching an open cell eats the item, not the wall** — new in Session 4 | `Monster.resolvePunch` | §4.3's "greedy player grabs the wrong thing" only makes sense if punching a HOLE cell is the eat action. A cell needs a *fourth* punch (after the item's gone) to finally reach GONE. Not confirmed against the arcade |
 | 24 | **Knock-off kinematics** | `Monster.knockOff`, `CONFIG.health.knockOffSpeedX/Y` | Fixed outward+upward pop, same for dynamite/photographer/bather, independent of source. Only reaches a monster still attached to that building at the moment the fuse ends |
 | 25 | **Items don't survive a building's collapse** | `Pickup.update` | §3.3 says rubble "can still contain exposed food/items"; Session 4 despawns any live pickup the instant its building stops `standing`. Deferred, not a fidelity claim |
+| 26 | **Punch is the single grab/eat action for humans too** — new in Session 5 | `Monster.interactWithHuman` | Reuses #23's rule: a connecting punch always eats a civilian, healing the monster. No separate "swat for nothing" outcome exists in Phase 1 |
+| 27 | **Street civilians spawn already fleeing, no proximity/AI** — new in Session 5 | `Game.updateHumanSpawning`, `CONFIG.humans.street`/`civilianHeal` | 00-core-loop §1 says civilians flee but not what triggers it; spawns already in flight toward the far edge on a timer, no detection of a nearby monster |
+| 28 | **Struggled-free victim drops to the street and flees like a civilian** | `Human.struggleFree` | §2.3 doesn't say where a freed victim ends up. Drops at the monster's position, flees toward the nearer screen edge (same convention as #22's walk-off direction), and `grabbable` latches false permanently |
+| 29 | **Hold-time range and its pseudo-random source** | `CONFIG.humans.holdTimeMin/Max`, `Game.nextHoldTime` | §2.3 says "a random hold time" with no range; 3–6 s is a guess. Uses the same deterministic-hash "no RNG" trick as `windowLit`/`spawnCycle`, not `Math.random()`, so reloads and the headless harness stay reproducible |
+| 30 | **Window occupancy split between Pickup and Human** | `CONFIG.humans.windowOccupancyCycle`, `Building.spawnOccupant` | Extends #20's mechanism rather than replacing it: most opened cells still defer to the Pickup cycle, a minority reveal a civilian/victim instead. Both the ratio and the cycle order are guesses |
+| 31 | **A street human in the way is hit before the wall behind it** | `Monster.resolvePunch`, `Game.humanTargetFor` | Not documented, but testing showed every gap in `CONFIG.buildings.dayLayout` is narrower than a full punch's reach — checking the wall first would make street civilians nearly unreachable. Free-roaming humans are checked first, against the narrower `getPunchBox()` |
 
 Port decisions (not fidelity claims, recorded so they aren't mistaken for one): keyboard mapping, and the 512×384 logical playfield (MCR-3 was 512×480). Both listed in `docs/design/13-inferred-items.md`.
 
@@ -261,6 +302,7 @@ Port decisions (not fidelity claims, recorded so they aren't mistaken for one): 
 | 2 | Buildings & climbing | 2026-07-28 | ✅ all success criteria verified |
 | 3 | Destruction & collapse | 2026-07-28 | ✅ all success criteria verified (123 headless checks) |
 | 4 | Eating & health | 2026-07-29 | ✅ all success criteria verified (64 headless checks) |
+| 5 | Civilians & designated victims | 2026-07-29 | ✅ all success criteria verified (59 headless checks + 8,000-tick fuzz) |
 
 ---
 
@@ -275,11 +317,14 @@ _(Anything the next session needs to know that isn't obvious from the code — d
 - **A cell revealing an item doesn't stop it from being punched — it changes what punching it does.** `Building.pickupAt(col, row)` is the thing to check before assuming a punch on a HOLE cell will progress it; see `Monster.resolvePunch`. Session 5's civilians are a separate system (`Human`, not `Pickup`) but will want the same "check before you punch/grab" shape.
 - **`CONFIG.buildings.dayLayout` has a height constraint**, documented in `CONFIG`: every building must be taller than the jump apex. If Session 9's `LevelData` ever authors a short building, a monster will be able to jump from the street onto its roof, which breaks the street-as-a-lane model. Either keep the constraint or decide deliberately to model the lane some other way.
 - **Rooftop walking uses `walkSpeed`, climbing uses `climbSpeed`, walking off defeated uses `CONFIG.health.walkOffSpeed`** — three different speeds for three different kinds of "walking", all guesses.
-- **`getPunchBox()` and `punchTargetRect()` are different boxes on purpose.** The first is the fist the art draws; the second is what damages cells (and now, indirectly, what triggers an eat) and reaches further back. Debug draws both (yellow / red). Sessions 5, 6 and 10 need to decide which one hits humans, enemies and other monsters — probably `getPunchBox()`, since the centre-reaching trick exists only to solve a building-frontage problem.
+- **`getPunchBox()` and `punchTargetRect()` are different boxes on purpose.** The first is the fist the art draws; the second is what damages cells and reaches further back. Debug draws both (yellow / red). **Session 5 decided this for humans**: free-roaming (street) humans are tested against `getPunchBox()`, while a human anchored to a building cell is found the same way a Pickup is (via `punchTargetRect()`/`cellTargetFor`). Sessions 6 and 10 still need to decide which box hits enemies and other monsters — probably `getPunchBox()`, same reasoning.
+- **`Monster.resolvePunch` checks free-roaming humans *before* the building, not after.** This was a real finding, not an arbitrary choice: every gap in `CONFIG.buildings.dayLayout` is narrower than a fully-extended punch's reach, so if the building were checked first a street civilian would almost never be reachable. Anything Session 6/7 adds that can also stand on the open street (a street Guardsman, a vehicle) should check this ordering before assuming "check the building first" is safe — it generally isn't, on this street layout.
+- **`Human` is a third thing (after `Building`/`Pickup`) that gets added to the entity list dynamically, mid-day** — window humans when a punch opens a cell (`Building.spawnOccupant`), street humans on `Game.updateHumanSpawning`'s timer. Both go through `game.entities.add`, same as `Pickup`, so draw order still puts them on top of buildings/monsters. `window.RAMPAGE` now also exports `Human`, `HumanRole`, `HumanState` for console poking and the headless harness.
+- **A monster can only ever hold one human at a time** (`Monster.holding`, checked in `interactWithHuman`) — punching a *second* designated victim while already holding one just eats it instead of swapping holds. Not explicitly specified, but the simplest reading of "the monster holds its designated victim" (singular).
 - **Debug readout** at the bottom of the screen (`CONFIG.debug.enabled`) is Session 1/3/4 scaffolding: small per-monster health bars, state/FPS/monster telemetry (now including energy and defeat status), the `CROSS` stopwatch, per-building structure %/state, and the collapse-attribution list. Session 8 replaces all of it with the real HUD.
 - **Jump apex is ~40 px against a 46 px monster** — under one body height. It's enough to clear every gap in the current layout. Raising `CONFIG.monster.jumpSpeed` is still the right lever if jumps feel bad, but it now has a second consequence: it raises the minimum legal building height (see the point above).
 - **`DAY_CLEAR` and `GAME_OVER` stubs have no `update`** — they're intentional dead ends until Session 9. Nothing transitions into them yet, including a fully-defeated solo player (there's no continue prompt or game-over trigger — the monster just despawns and `game.entities.ofType(Monster)` goes empty). `DAY_INTRO` passes straight through to `PLAY`. **`Game.dayCleared()` now returns a real answer** — you can flatten the city and nothing happens.
 - **`Game.collapseEvents` is never drained.** It's reset per day in `startDay()` and grows by one entry per collapse (max five a day at the moment). Session 8 should decide whether the ScoreSystem consumes it or just reads it.
 - **No spatial partitioning, no camera, no audio, no `LevelData`** — deliberately not built, since no Phase-1 mechanic needs them yet. `Game.faceTargetFor` / `roofLandingAt` / `cellTargetFor` are linear scans over five buildings; that's the whole spatial system and it's enough.
 - **The collapse sound, eat sound, and zap sound are all missing, obviously** — Session 11 owns audio. The dust puff is the only collapse feedback right now besides the shake; pickups have no sound or animation on consume, they just vanish.
-- Sessions 1-3 are committed; Session 4's changes are not committed yet (as of this writing).
+- Sessions 1-4 are committed; Session 5's changes are not committed yet (as of this writing).

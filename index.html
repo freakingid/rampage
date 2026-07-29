@@ -48,6 +48,8 @@
      09-art-audio .................... DustPuff (collapse particle)
      03-eating-health ................ Pickup (food & hazards revealed by
                                        punching cells)                    §4.2, §4.3
+     01-monsters ..................... Human (civilians, designated victims,
+     03-eating-health                  window-soldier placeholder)  §2.3, §4.2
      01-monsters ..................... Monster class (all three types identical)
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
      03-eating-health ................ energy bar, applyDamage/heal, defeat &
@@ -72,6 +74,16 @@
    energy reverts to a human placeholder and walks off screen; Pickup
    entities (food, bad items, live electrical, wall dynamite with its fuse,
    photographer/bather knock-off hazards) revealed when a punch opens a cell.
+   Session 5 scope: civilians and designated victims. A Human entity with a
+   role flag (civilian / designated victim / window-soldier placeholder)
+   appears in windows (sharing the punch-reveals-an-occupant mechanism
+   Session 4 built for Pickup) and flees across the street. Punching one
+   eats it for health, same single grab/eat action Pickup already uses —
+   except a monster's own designated victim (woman/George, middle-aged
+   man/Lizzie, businessman/Ralph) is grabbed and held instead, struggles
+   free after a random time, and can then be eaten like any civilian. While
+   held, `Monster.isHoldingVictim` is the hook Session 6's Guardsmen will
+   read to stop firing.
    ========================================================================== */
 
 
@@ -234,6 +246,61 @@ const CONFIG = {
       { id: 'TOILET', category: 'neutral', color: '#dfe6ee' },
       { id: 'EMPTY_BATHTUB', category: 'neutral', color: '#d8dee6' },
     ],
+  },
+
+  /* ---- Humans (01-monsters.md §2.3, 03-eating-health.md §4.2) -----------
+     "Punching buildings exposes food and civilians inside" (00-core-loop
+     §1), and eating one heals like any other food item. Each monster also
+     has one "designated victim" (§2.3) it can pluck from a window and
+     hold — while held, the victim struggles free after a random time and
+     can then be eaten like any other civilian.
+
+     [INFERRED] The GDD already gives punch a single grab/eat action for
+     Pickup (§4.3, 13-inferred-items.md #24); Human reuses that same rule
+     rather than inventing a separate "swat for nothing" outcome the GDD
+     never describes. See 13-inferred-items.md #27.                      */
+  humans: {
+    width: 12,
+    height: 20,        // fits inside one 22px building cell without spilling
+                       // into the row above (CONFIG.buildings.cellHeight)
+    civilianHeal: 15,          // eating any plain civilian, window or street
+                              // [INFERRED — 13-inferred-items.md #28]
+    holdOffsetX: 16,           // px in front of the monster while HELD
+    holdOffsetY: 30,           // px above the monster's feet while HELD
+    holdTimeMin: 3.0,          // s — random hold duration before the victim
+    holdTimeMax: 6.0,          // struggles free [INFERRED — #30]
+
+    /* Window occupancy — extends the Session 4 reveal-on-HOLE mechanism
+       (CONFIG.pickups.spawnCycle) rather than replacing it. Deterministic
+       cycle keyed the same way (13-inferred-items.md #21): 'ITEM' defers to
+       the existing Pickup cycle, anything else names a Human type instead.
+       Majority stays 'ITEM' so Session 4's pickup density still dominates.
+       [INFERRED — 13-inferred-items.md #31.]                              */
+    windowOccupancyCycle: [
+      'ITEM', 'ITEM', 'CIVILIAN', 'ITEM', 'WOMAN', 'ITEM',
+      'ITEM', 'MIDDLE_AGED_MAN', 'CIVILIAN', 'ITEM', 'BUSINESSMAN',
+    ],
+
+    /* Fleeing street civilians (00-core-loop §1: "civilians ... flee on
+       the street"). [INFERRED] No proximity/AI behavior is documented, so
+       Phase 1 spawns them already in flight, crossing the street once and
+       despawning off the far edge — 13-inferred-items.md #28.            */
+    street: {
+      spawnInterval: 5.0,      // s between spawn attempts
+      maxActive: 2,            // concurrent fleeing civilians
+      fleeSpeed: 70,           // px/s
+    },
+
+    types: {
+      CIVILIAN:        { id: 'CIVILIAN', role: 'CIVILIAN', color: '#c9a876' },
+      WOMAN:           { id: 'WOMAN', role: 'DESIGNATED_VICTIM', victimOf: 'GEORGE', color: '#c9506f' },
+      MIDDLE_AGED_MAN: { id: 'MIDDLE_AGED_MAN', role: 'DESIGNATED_VICTIM', victimOf: 'LIZZIE', color: '#d8c452' },
+      BUSINESSMAN:     { id: 'BUSINESSMAN', role: 'DESIGNATED_VICTIM', victimOf: 'RALPH', color: '#3a3f52' },
+      // Session 6 placeholder (§2.3's grab loop doesn't apply to this role):
+      // the role exists so Human can represent it, but Phase 1 never spawns
+      // one — there's no shooting/behavior to give it yet.
+      WINDOW_SOLDIER:  { id: 'WINDOW_SOLDIER', role: 'WINDOW_SOLDIER', color: '#5c6b4a' },
+    },
   },
 
   /* ---- Buildings (02-movement-destruction.md §3.2) ---------------------
@@ -694,7 +761,7 @@ class Building extends Entity {
     this.cells = [];
     for (let r = 0; r < rows; r++) {
       const row = [];
-      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp, pickup: null });
+      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp, pickup: null, human: null });
       this.cells.push(row);
     }
 
@@ -799,14 +866,15 @@ class Building extends Entity {
     if (cell.state === before) return null;
     if (cell.state === CellState.CRACKED) return 'partial';
     if (cell.state === CellState.HOLE) {
-      if (game) this.spawnPickup(col, row, game);
+      if (game) this.spawnOccupant(col, row, game);
       return 'full';
     }
     // → GONE. §6 has no row for it, and anything still sitting exposed goes
     // with the wall — this shouldn't normally happen (Monster.resolvePunch
-    // eats a pickup instead of damaging its cell further) but it's a safety
-    // net for any other future caller of damageCell.
+    // eats/grabs whatever occupies a cell instead of damaging it further)
+    // but it's a safety net for any other future caller of damageCell.
     if (cell.pickup) { cell.pickup.alive = false; cell.pickup = null; }
+    if (cell.human) { cell.human.alive = false; cell.human = null; }
     return null;
   }
 
@@ -819,6 +887,17 @@ class Building extends Entity {
   clearPickupCell(col, row) {
     const cell = this.cellAt(col, row);
     if (cell) cell.pickup = null;
+  }
+
+  /** 01-monsters §2.3 — is there a civilian/victim sitting in this cell right now? */
+  humanAt(col, row) {
+    const cell = this.cellAt(col, row);
+    return cell ? cell.human : null;
+  }
+
+  clearHumanCell(col, row) {
+    const cell = this.cellAt(col, row);
+    if (cell) cell.human = null;
   }
 
   /**
@@ -837,6 +916,34 @@ class Building extends Entity {
     const pickup = new Pickup(def, this, col, row);
     cell.pickup = pickup;
     game.entities.add(pickup);
+  }
+
+  /**
+   * 01-monsters §2.3 — reveal a civilian or designated victim in this cell
+   * instead of a Pickup.
+   */
+  spawnHuman(typeId, col, row, game) {
+    const cell = this.cellAt(col, row);
+    if (!cell || cell.human) return;
+    const human = Human.spawnInWindow(typeId, this, col, row);
+    cell.human = human;
+    game.entities.add(human);
+  }
+
+  /**
+   * 01-monsters §2.3 — decide what this newly opened cell reveals: an item
+   * (deferring to spawnPickup's own cycle) or a civilian/victim. A separate
+   * deterministic cycle keyed the same way as spawnPickup's, so the two
+   * choices don't have to share an index space. [INFERRED — #31.]
+   */
+  spawnOccupant(col, row, game) {
+    const cell = this.cellAt(col, row);
+    if (!cell || cell.pickup || cell.human) return;
+    const H = CONFIG.humans;
+    const idx = (col * 7 + row * 13 + this.index * 5 + 1) % H.windowOccupancyCycle.length;
+    const token = H.windowOccupancyCycle[idx];
+    if (token === 'ITEM') { this.spawnPickup(col, row, game); return; }
+    this.spawnHuman(token, col, row, game);
   }
 
   /* ---- §3.3 collapse trigger & consequences ---------------------------- */
@@ -1159,6 +1266,172 @@ class Pickup extends Entity {
 
 
 /* ==========================================================================
+   01-monsters §2.3, 03-eating-health §4.2 — Human
+
+   Civilians, designated victims and the window-soldier placeholder all share
+   this one class with a `role` flag, per 10-architecture.md §11.3. Two
+   spawn shapes, picked by the static factories below:
+
+   - `spawnInWindow` — anchored to a building cell exactly like Pickup
+     (revealed the moment a punch opens that cell to HOLE, via
+     Building.spawnOccupant); stays put (`WINDOW_IDLE`) until eaten, grabbed,
+     or its building comes down under it.
+   - `spawnOnStreet` — a free-roaming civilian that spawns already fleeing
+     across the street and despawns off the far edge. [INFERRED — no
+     proximity/AI behavior is documented; 13-inferred-items.md #28.]
+
+   A punch connecting with a Human (Monster.interactWithHuman) either eats it
+   on the spot — the same single grab/eat action Pickup already uses,
+   13-inferred-items.md #27 — or, if it's this monster's own *designated
+   victim* and this monster isn't already holding someone, grabs and holds it
+   instead (§2.3). While HELD the victim tracks the monster; after a random
+   `holdTimer` it struggles free, drops onto the street and flees just like
+   a plain civilian — `grabbable` latches false so it can only be eaten from
+   then on, never re-grabbed.
+   ========================================================================== */
+const HumanRole = {
+  CIVILIAN: 'CIVILIAN',
+  DESIGNATED_VICTIM: 'DESIGNATED_VICTIM',
+  WINDOW_SOLDIER: 'WINDOW_SOLDIER',   // Session 6 placeholder — never spawned yet
+};
+
+const HumanState = {
+  WINDOW_IDLE: 'WINDOW_IDLE',   // sitting in a revealed window cell
+  FLEEING: 'FLEEING',          // free-roaming on the street (crossing, or post-struggle)
+  HELD: 'HELD',                // grabbed by a monster, tracking its position
+};
+
+class Human extends Entity {
+  constructor(typeId, x, y) {
+    const H = CONFIG.humans;
+    super(x, y, H.width, H.height);
+    this.typeId = typeId;
+    this.type = H.types[typeId];
+    this.role = this.type.role;
+
+    this.location = null;        // 'WINDOW' | 'STREET' — set by the factory below
+    this.state = null;
+    this.building = null;
+    this.col = -1;
+    this.row = -1;
+
+    // §2.3 grab/hold. Only a DESIGNATED_VICTIM is ever grabbable, and only
+    // once — struggling free latches it false so it becomes plain-eatable.
+    this.grabbable = this.role === HumanRole.DESIGNATED_VICTIM;
+    this.holder = null;
+    this.holdTimer = 0;
+    this.fleeDir = 0;
+  }
+
+  /** A civilian/victim sitting in a building window, revealed by a punch. */
+  static spawnInWindow(typeId, building, col, row) {
+    const r = building.cellRect(col, row);
+    const human = new Human(typeId, r.x + r.w / 2, r.y + r.h);
+    human.location = 'WINDOW';
+    human.state = HumanState.WINDOW_IDLE;
+    human.building = building;
+    human.col = col;
+    human.row = row;
+    return human;
+  }
+
+  /** A civilian already fleeing across the street. */
+  static spawnOnStreet(typeId, x, fleeDir) {
+    const human = new Human(typeId, x, CONFIG.world.groundY);
+    human.location = 'STREET';
+    human.state = HumanState.FLEEING;
+    human.fleeDir = fleeDir;
+    return human;
+  }
+
+  update(dt) {
+    if (!this.alive) return;
+    if (this.state === HumanState.HELD) { this.updateHeld(dt); return; }
+    if (this.location === 'WINDOW') {
+      // A building collapsing under a civilian who was never eaten — same
+      // rule as Pickup (13-inferred-items.md #26): it doesn't survive into
+      // rubble.
+      if (this.building && !this.building.standing) this.despawn();
+      return;
+    }
+    this.updateFleeing(dt);
+  }
+
+  /** §2.3 — track the holding monster until the random hold time runs out. */
+  updateHeld(dt) {
+    const H = CONFIG.humans;
+    const m = this.holder;
+    this.x = m.x + (m.facing > 0 ? H.holdOffsetX : -H.holdOffsetX);
+    this.y = m.y - H.holdOffsetY;
+    this.holdTimer -= dt;
+    if (this.holdTimer <= 0) this.struggleFree();
+  }
+
+  /**
+   * §2.3 "the victim struggles free ... and can then be eaten." Drops onto
+   * the street at the monster's position and flees like any other civilian;
+   * `grabbable` is now false so a further punch only ever eats it.
+   * [INFERRED — 13-inferred-items.md #29: the GDD doesn't say where a freed
+   * victim ends up or what it does next.]
+   */
+  struggleFree() {
+    const m = this.holder;
+    if (m) m.holding = null;
+    this.holder = null;
+    this.grabbable = false;
+    this.location = 'STREET';
+    this.state = HumanState.FLEEING;
+    this.y = CONFIG.world.groundY;
+    this.fleeDir = this.x < CONFIG.view.width / 2 ? -1 : 1;
+  }
+
+  updateFleeing(dt) {
+    const H = CONFIG.humans;
+    this.vx = this.fleeDir * H.street.fleeSpeed;
+    this.x += this.vx * dt;
+    const margin = this.w * 2;
+    if (this.x < -margin || this.x > CONFIG.view.width + margin) this.alive = false;
+  }
+
+  /** §4.2 — eaten (the only outcome for a civilian, or for the wrong
+   * monster's designated victim; see Monster.interactWithHuman). */
+  consume(monster) {
+    if (!this.alive) return;
+    monster.heal(CONFIG.humans.civilianHeal, this.typeId);
+    this.despawn();
+  }
+
+  despawn() {
+    this.alive = false;
+    if (this.location === 'WINDOW' && this.building) this.building.clearHumanCell(this.col, this.row);
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    const w = this.w, h = this.h;
+
+    // Flash just before a held victim struggles free — same convention as
+    // Pickup's fuse warning.
+    const warn = this.state === HumanState.HELD && this.holdTimer < 1.0 &&
+      Math.floor(this.holdTimer * 10) % 2 === 0;
+    ctx.fillStyle = warn ? '#ffffff' : this.type.color;
+    ctx.fillRect(cx - w / 2, feet - h, w, h);
+
+    // Designated victims get an accent outline so a player can tell their
+    // own target at a glance, even before there's real art.
+    if (this.role === HumanRole.DESIGNATED_VICTIM) {
+      ctx.strokeStyle = CONFIG.ui.accentColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - w / 2 + 0.5, feet - h + 0.5, w - 1, h - 1);
+    }
+  }
+}
+
+
+/* ==========================================================================
    01-monsters — Monster
    02-movement-destruction §3.1 — movement & traversal
 
@@ -1229,12 +1502,28 @@ class Monster extends Entity {
     this.lastHealSource = null;
     this.defeated = false;
     this.walkOffDir = 0;      // set once, in beginDefeat()
+
+    /* 01-monsters §2.3 — the Human this monster currently has grabbed and
+       is holding, or null. This is also Session 6's hook: "while a monster
+       holds its designated victim, only the National Guardsmen stop
+       firing" — see isHoldingVictim. */
+    this.holding = null;
   }
 
   /** 0..1, for the debug bar and (Session 8) the real HUD. */
   get energyFraction() {
     return CONFIG.health.maxEnergy > 0 ? this.energy / CONFIG.health.maxEnergy : 0;
   }
+
+  /**
+   * §2.3 — "while a monster holds its designated victim, only the National
+   * Guardsmen stop firing." Session 6 doesn't exist yet, so nothing reads
+   * this yet; the hook is here so it's observable the moment Guardsmen are.
+   * [INFERRED — 13-inferred-items.md #7: single-source claim, and whether
+   * it's scoped per-monster or applies globally isn't documented either;
+   * Session 6 decides that when it wires up Guardsman AI.]
+   */
+  get isHoldingVictim() { return !!this.holding; }
 
   get isPunching() { return this.punchTimer > 0; }
 
@@ -1294,24 +1583,82 @@ class Monster extends Entity {
   }
 
   /**
-   * §3.2/§4.2/§4.3 — land one punch on one wall section. Works from the
-   * street and from a face; from a roof the band sits entirely above the
-   * roof line and hits nothing, which needs no special case.
+   * §3.2/§4.2/§4.3/§2.3 — land one punch on one wall section, or on whatever
+   * is occupying it. Works from the street and from a face; from a roof the
+   * band sits entirely above the roof line and hits nothing, which needs no
+   * special case.
    *
-   * If the targeted cell is already open and has an item sitting in it, the
-   * punch eats/grabs the item instead of damaging the cell further — §4.3's
-   * "because punching is fast, a greedy player will sometimes grab the wrong
-   * thing" only makes sense if punching an open cell is the eat action.
+   * A free-roaming (street) human standing in the punch's way is checked
+   * FIRST, against the narrower `getPunchBox()` — the fist the art draws —
+   * rather than the wall-reaching `punchTargetRect()`. [INFERRED — someone
+   * standing between the monster and a building takes the hit meant for
+   * them, not the wall behind them; 13-inferred-items.md #32.] This also
+   * matters mechanically: the street's buildings and gaps (CONFIG.buildings.
+   * dayLayout) leave no gap wider than a full punch's reach, so without this
+   * priority a street civilian would almost never be reachable — the wider
+   * wall-reaching rect would always find some building cell first.
+   *
+   * Failing that, a human occupying the targeted building cell (civilian,
+   * designated victim, or the Session 6 soldier placeholder) takes priority
+   * over a Pickup, which takes priority over wall damage — see
+   * interactWithHuman for what a human does with the punch. If the targeted
+   * cell is open and has an item sitting in it instead, the punch eats/grabs
+   * the item — §4.3's "because punching is fast, a greedy player will
+   * sometimes grab the wrong thing" only makes sense if punching an open
+   * cell is the eat action.
    */
   resolvePunch(game) {
+    const streetHuman = game.humanTargetFor(this);
+    if (streetHuman) return this.interactWithHuman(streetHuman, game);
+
     const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
-    if (!target) return;
+    if (!target) return null;
+    const human = target.building.humanAt(target.col, target.row);
+    if (human) return this.interactWithHuman(human, game);
     const pickup = target.building.pickupAt(target.col, target.row);
     if (pickup) { pickup.consume(this); return 'eat'; }
     // The return value is the §6 break kind ('partial' / 'full'). Nothing
     // reads it until Session 8 wires up the ScoreSystem.
     return target.building.damageCell(
       target.col, target.row, CONFIG.monster.punchDamage, this, 'punch', game);
+  }
+
+  /**
+   * 01-monsters §2.3 — a punch connected with a human. This monster's own
+   * designated victim, while still grabbable and while this monster isn't
+   * already holding someone, is grabbed and held instead of eaten outright;
+   * anyone else — a plain civilian, the Session-6 soldier placeholder, or
+   * the *wrong* monster's designated victim — is just eaten, same as a food
+   * Pickup. "Each monster can grab only its own designated victim; the
+   * wrong victim is eaten ... instead of held" (SESSION-PLAN Session 5).
+   */
+  interactWithHuman(human, game) {
+    if (!human.alive || human.state === HumanState.HELD) return null;
+    if (human.grabbable && !this.holding &&
+        human.role === HumanRole.DESIGNATED_VICTIM &&
+        human.typeId === this.type.designatedVictim) {
+      this.grabHuman(human, game);
+      return 'grab';
+    }
+    human.consume(this);
+    return 'eat';
+  }
+
+  /** §2.3 grab: pull it out of its window (if any) and start the hold timer. */
+  grabHuman(human, game) {
+    if (human.location === 'WINDOW' && human.building) {
+      human.building.clearHumanCell(human.col, human.row);
+    }
+    human.holder = this;
+    human.holdTimer = game.nextHoldTime();
+    human.state = HumanState.HELD;
+    this.holding = human;
+  }
+
+  /** Drop whatever this monster is currently holding — defeat and knock-off
+   * both need to release a held victim rather than leave it stranded. */
+  releaseHolding() {
+    if (this.holding) this.holding.struggleFree();
   }
 
   /**
@@ -1357,6 +1704,7 @@ class Monster extends Entity {
     this.y = CONFIG.world.groundY;
     this.punchTimer = 0;
     this.walkOffDir = this.x < CONFIG.view.width / 2 ? -1 : 1;
+    this.releaseHolding();
   }
 
   /** §4.1 walk-off. No input is read at all — nothing can stop this short of
@@ -1386,6 +1734,7 @@ class Monster extends Entity {
     this.detach(null, false);
     this.vx = outward * H.knockOffSpeedX;
     this.vy = H.knockOffSpeedY;
+    this.releaseHolding();
   }
 
   update(dt, game) {
@@ -1887,9 +2236,19 @@ function drawDebug(game) {
       '  E ' + Math.round(monster.energy) + '/' + CONFIG.health.maxEnergy +
       (monster.lastDamageSource ? '  DMG:' + monster.lastDamageSource : '') +
       (monster.lastHealSource ? '  HEAL:' + monster.lastHealSource : '') +
-      (monster.defeated ? '  DEFEATED' : '')
+      (monster.defeated ? '  DEFEATED' : '') +
+      (monster.holding ? '  HOLDING ' + monster.holding.typeId +
+        ' (' + monster.holding.holdTimer.toFixed(1) + 's)' : '')
     );
     lines.push(game.crossing.readout);
+  }
+  // Session 5 readout: how many civilians/victims are in play and where.
+  const humans = game.entities.ofType(Human);
+  if (humans.length) {
+    const counts = { WINDOW_IDLE: 0, FLEEING: 0, HELD: 0 };
+    for (const h of humans) counts[h.state] = (counts[h.state] || 0) + 1;
+    lines.push('HUMANS ' + humans.length +
+      '  window ' + counts.WINDOW_IDLE + '  fleeing ' + counts.FLEEING + '  held ' + counts.HELD);
   }
   drawDebugHealthBars(game);
   // Session 3 readout: per-building structure %, state, and who owns the
@@ -1973,6 +2332,14 @@ class Game {
        third-party collapse). This is the attribution the 2,500-point bonus
        depends on; Session 8's ScoreSystem is what drains it. Reset per day. */
     this.collapseEvents = [];
+
+    /* 01-monsters §2.3 — fleeing street-civilian spawn cadence and the
+       deterministic pseudo-random source for hold times (no Math.random,
+       same reasoning as every other "no RNG" trick in this file: reloads —
+       and the headless test harness — stay reproducible). Reset per day. */
+    this.humanSpawnTimer = 0;
+    this.streetSpawnCounter = 0;
+    this.holdSeed = 0;
 
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
@@ -2059,8 +2426,47 @@ class Game {
   startDay() {
     this.entities.clear();
     this.collapseEvents = [];
+    this.humanSpawnTimer = 0;
+    this.streetSpawnCounter = 0;
+    this.holdSeed = 0;
     this.spawnBuildings();
     this.spawnMonsters();
+  }
+
+  /**
+   * 01-monsters §2.3 — a deterministic stand-in for Math.random(), so a
+   * held victim's struggle-free time varies across grabs but a reload (and
+   * the headless test harness) reproduces the exact same sequence.
+   */
+  nextHoldTime() {
+    this.holdSeed++;
+    const H = CONFIG.humans;
+    const frac = (this.holdSeed * 2654435761) % 1000 / 1000;
+    return H.holdTimeMin + (H.holdTimeMax - H.holdTimeMin) * frac;
+  }
+
+  /**
+   * 00-core-loop §1 "civilians ... flee on the street" — spawns a fresh
+   * fleeing civilian at whichever screen edge alternates next, capped at
+   * `CONFIG.humans.street.maxActive` concurrent. [INFERRED — 13-inferred-
+   * items.md #28: spawns already in flight rather than reacting to a
+   * nearby monster, since no proximity/AI rule is documented.]
+   */
+  updateHumanSpawning(dt) {
+    const H = CONFIG.humans.street;
+    this.humanSpawnTimer -= dt;
+    if (this.humanSpawnTimer > 0) return;
+    this.humanSpawnTimer = H.spawnInterval;
+
+    const active = this.entities.ofType(Human).filter(function (h) {
+      return h.alive && h.location === 'STREET' && h.state === HumanState.FLEEING;
+    });
+    if (active.length >= H.maxActive) return;
+
+    this.streetSpawnCounter++;
+    const fromLeft = this.streetSpawnCounter % 2 === 0;
+    const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
+    this.entities.add(Human.spawnOnStreet('CIVILIAN', x, fromLeft ? 1 : -1));
   }
 
   /** §7 day clear: every building on the board is rubble. Session 9 acts on it. */
@@ -2150,6 +2556,33 @@ class Game {
           if (better) { best = { building: b, col: c, row: r }; bestArea = area; bestX = cx; }
         }
       }
+    }
+    return best;
+  }
+
+  /**
+   * 01-monsters §2.3 — the free-roaming (street) human a punch connects
+   * with, if any. Tested against `getPunchBox()` — the fist the art draws —
+   * rather than the wall-reaching `punchTargetRect()`: that rect only
+   * reaches back to the monster's own centre to solve a building-frontage
+   * edge case (13-inferred-items.md #17) that doesn't apply to a target
+   * that isn't anchored to a cell. Returns the best-overlap candidate so a
+   * punch never resolves against two fleeing civilians standing close
+   * together.
+   */
+  humanTargetFor(monster) {
+    const box = monster.getPunchBox();
+    if (!box) return null;
+    let best = null, bestArea = 0;
+    const humans = this.entities.ofType(Human);
+    for (let i = 0; i < humans.length; i++) {
+      const h = humans[i];
+      if (!h.alive || h.location !== 'STREET' || h.state === HumanState.HELD) continue;
+      const ox = Math.min(box.x + box.w, h.right) - Math.max(box.x, h.left);
+      const oy = Math.min(box.y + box.h, h.bottom) - Math.max(box.y, h.top);
+      if (ox <= 0 || oy <= 0) continue;
+      const area = ox * oy;
+      if (area > bestArea) { best = h; bestArea = area; }
     }
     return best;
   }
@@ -2278,6 +2711,7 @@ Game.prototype.handlers = {
          missing steps in place: monsters → enemies/hazards → projectiles →
          buildings → collisions → eating/pickups → score/health → day-clear. */
       game.entities.update(dt, game);
+      game.updateHumanSpawning(dt);
       updateCrossingTimer(game, dt);
     },
     draw(game, alpha) {
@@ -2383,6 +2817,7 @@ function boot() {
   window.RAMPAGE = {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
+    Human, HumanRole, HumanState,
   };
   return game;
 }

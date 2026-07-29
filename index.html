@@ -206,11 +206,31 @@ const CONFIG = {
       dynamiteThrown: 20,     // Session 6 — Guardsman-thrown dynamite, wired this session
       bomb: 25,               // Session 6 — helicopter bombing run, wired this session
                               // [INFERRED — new this session, 13-inferred-items.md #33]
-      shell: 15,              // Session 7 — police car shell, not called yet
-      tankShell: 25,          // Session 7 — tank shell, not called yet
-      lightning: 20,          // Session 7 — lightning cloud, not called yet
+      shell: 15,              // Session 7 — police car shell, wired this session
+      tankShell: 25,          // Session 7 — tank shell, wired this session
+      lightning: 20,          // Session 7 — lightning cloud bolt, wired this session
+                              // [INFERRED — new this session, 13-inferred-items.md #36]
       underwaterPerSecond: 8, // Session 9 — river/pier levels, not called yet
       monsterPunch: 8,        // Session 10 — monster-vs-monster, not called yet
+    },
+
+    /* -- Knockback (§5.1: tank/police "large knockback ... can knock a
+       monster off a building or across the screen") — new in Session 7.
+       Generalizes Session 4's fixed knockOff pop into a directional shove:
+       Monster.applyKnockback pushes away from wherever the shell came from
+       rather than away from a building, so a shell can clear a monster off
+       a roof/face regardless of which side it was fired from. `duration`
+       is Monster.launchAir's knockbackTimer — long enough for the shove to
+       actually carry the monster clear of a building before normal
+       input-driven air control resumes; also now backs knockOff's existing
+       dynamite/photographer/bather pop, which had the same gap (a forced
+       vx was being overwritten by air control the very next tick and never
+       travelled anywhere — 13-inferred-items.md #37 covers both).
+       [INFERRED — no speed/duration is documented for either.]             */
+    knockback: {
+      shellSpeedX: 260,       // px/s outward — comparable to jumpSpeed (270),
+      shellSpeedY: -260,      // enough to clear a building's footprint
+      duration: 0.35,         // s before air control resumes
     },
   },
 
@@ -233,6 +253,7 @@ const CONFIG = {
       'TURKEY', 'POISON', 'HAMBURGER', 'CACTUS', 'MILK', 'LIT_BULB', 'FRUIT',
       'DYNAMITE', 'TOAST', 'TV_ON', 'PHOTOGRAPHER', 'TOASTER_NO_TOAST',
       'BATHER', 'NEON_SIGN', 'TOILET', 'EMPTY_BATHTUB',
+      'MANHOLE_COVER', 'FLOWER_POT', 'SAFE',
     ],
     definitions: [
       // -- Food (§4.2): heals on eating. --------------------------------
@@ -263,6 +284,17 @@ const CONFIG = {
       // -- Junk (§4.3): "no benefit if eaten" — no health effect either way.
       { id: 'TOILET', category: 'neutral', color: '#dfe6ee' },
       { id: 'EMPTY_BATHTUB', category: 'neutral', color: '#d8dee6' },
+      // -- Environmental weapons (§4.3/§5.1/§6) — new in Session 7. "Can be
+      //    knocked loose and dropped onto ground and air units." A connecting
+      //    punch doesn't eat these (no heal/damage); Pickup.consume hands a
+      //    'weapon'-category item off to Projectile.spawnDroppedObject
+      //    instead, which falls straight down and destroys the first Tank/
+      //    Police/Helicopter it reaches. [INFERRED throughout — the GDD names
+      //    the three items and the "knocked loose and dropped" mechanic but
+      //    gives no kinematics; 13-inferred-items.md #40.]
+      { id: 'MANHOLE_COVER', category: 'weapon', color: '#5a5a5a' },
+      { id: 'FLOWER_POT',    category: 'weapon', color: '#b5651d' },
+      { id: 'SAFE',          category: 'weapon', color: '#2e3440' },
     ],
   },
 
@@ -463,9 +495,11 @@ const CONFIG = {
     /* Helicopter (§5.1): "flies over, turns, and dives to strafe" early on;
        "drops bombs from altitude" later. Both behaviors are implemented;
        `behaviorMode` is the difficulty flag SpawnDirector reads for each new
-       helicopter it spawns. Session 9's day/level system is what will
-       eventually flip this per-day per §5.2 ("helicopters shift from
-       strafing to bombing") — until then it's a manual CONFIG toggle.
+       helicopter it spawns. 'AUTO' (Session 7 default) reads §5.2's "shift
+       from strafing to bombing" off CONFIG.difficulty.scalar via
+       Game.bombChance() — see Game.trySpawnHelicopter; 'STRAFE'/'BOMB'
+       still work as an explicit manual override (Session 6's original
+       behavior) for testing a single mode in isolation.
        [INFERRED] every number below, including cruise/dive altitudes,
        which are picked so a helicopter always flies above every building's
        roofline except during its strafing dive, and that dive line sits
@@ -477,7 +511,7 @@ const CONFIG = {
       height: 14,
       bodyColor: '#5a6270',
       rotorColor: '#232630',
-      behaviorMode: 'STRAFE',    // 'STRAFE' | 'BOMB' — the difficulty flag
+      behaviorMode: 'AUTO',      // 'AUTO' | 'STRAFE' | 'BOMB'
       cruiseAltitudeY: 70,       // px — well above every rooftop
       cruiseSpeed: 90,           // px/s horizontal
       strafe: {
@@ -491,11 +525,77 @@ const CONFIG = {
       },
     },
 
-    /* Projectiles: bullets (Guardsman rifle + helicopter strafe), thrown
-       dynamite (Guardsman), and bombs (helicopter bombing run). One class,
-       `kind` picks the flavor — 10-architecture.md §11.3's "new
-       enemy/hazard = new subclass" seam doesn't apply here since these are
-       all "a munition in flight," not new actors.                         */
+    /* Ground vehicles (§5.1) — new in Session 7. "Tank: slow, heavily
+       armored; fires heavy shells that do big damage and large knockback
+       ... Police car: like a tank but moves and fires faster." One class
+       (`Vehicle`, variant TANK/POLICE) sharing a cadence and a concurrent
+       cap per §5.2 axis 2 ("more and faster ground units ... tanks and
+       police stacked") — see Game.trySpawnVehicle/policeChance. Neither
+       variant heals on destruction (not food), and — per 13-inferred-
+       items.md #7's single-source scope — neither respects
+       Monster.isHoldingVictim the way a Guardsman does; the GDD's hold-
+       stops-fire claim names only the Guardsmen. [INFERRED throughout —
+       13-inferred-items.md #38: "armored" isn't modeled as extra hit
+       points, same one-connecting-punch destruction every enemy so far
+       uses; speeds/fire rates/shell numbers are first-pass guesses.]      */
+    vehicle: {
+      width: 30,
+      height: 20,          // same footprint as Guardsman — proven punch-reach geometry
+      targetRange: 280,
+      tank: {
+        speed: 26, fireInterval: 2.4, fireIntervalJitter: 0.4,
+        bodyColor: '#4a5c3a', turretColor: '#313f22', damageKey: 'tankShell',
+      },
+      police: {
+        speed: 68, fireInterval: 1.0, fireIntervalJitter: 0.2,
+        bodyColor: '#28407a', turretColor: '#182648', damageKey: 'shell',
+      },
+    },
+
+    /* Paratrooper (§5.1) — new in Session 7. "Lands on a rooftop and
+       defends that building; rapid-fires when the monster is on it."
+       Anchored to the specific building it drops onto for its whole life —
+       see Paratrooper/Game.trySpawnParatrooper/Game.monsterOnBuilding.
+       Doesn't heal on destruction, same reasoning as the Guardsman's street
+       variant. [INFERRED — 13-inferred-items.md #39: drop speed and the
+       rapid-fire cadence (faster than a window Guardsman's) aren't
+       documented numerically.]                                           */
+    paratrooper: {
+      width: 12,
+      height: 20,          // same footprint as Guardsman/Human
+      color: '#3a4a2f',
+      helmetColor: '#232f1c',
+      chuteColor: '#c9c9c9',
+      dropSpeed: 55,       // px/s during the parachute descent to the roof
+      fireInterval: 0.55,  // rapid vs. a window Guardsman's 1.6s
+      fireIntervalJitter: 0.15,
+    },
+
+    /* Lightning cloud (§5.1) — new in Session 7. "Drifts over the city and
+       fires lightning bolts; heavy damage on hit. A hazard rather than a
+       unit" — so unlike every other Enemy so far, `punchable = false`: it
+       cannot be destroyed, only avoided. [INFERRED — 13-inferred-items.md
+       #39: it fires positionally (straight down from wherever it currently
+       is) on a timer rather than homing on a monster, since "drifts and
+       fires bolts" reads as a hazard's schedule, not a unit's fire-control;
+       drift speed/altitude/bolt cadence are first-pass guesses.]         */
+    lightningCloud: {
+      width: 44,
+      height: 16,
+      color: '#3a3f52',
+      flashColor: '#e8e0ff',
+      altitudeY: 40,        // above the helicopter's own cruise altitude (70)
+      driftSpeed: 36,       // px/s horizontal
+      boltInterval: 2.4,
+      boltIntervalJitter: 0.6,
+    },
+
+    /* Projectiles: bullets (Guardsman rifle + helicopter strafe + Paratrooper
+       rapid-fire), thrown dynamite (Guardsman), bombs (helicopter bombing
+       run), tank/police shells, lightning bolts, and dropped environmental
+       weapons. One class, `kind` picks the flavor — 10-architecture.md
+       §11.3's "new enemy/hazard = new subclass" seam doesn't apply here
+       since these are all "a munition in flight," not new actors.        */
     projectiles: {
       bullet: { speed: 240, width: 6, height: 3, color: '#e8d97a' },
       dynamite: {
@@ -513,12 +613,29 @@ const CONFIG = {
         blastRadius: 20,
         width: 8, height: 10, color: '#333a44',
       },
+      // -- Tank/police heavy shell (§5.1) — new in Session 7. Direct-hit
+      //    damage only (no blast radius — "heavy shells" read as direct
+      //    fire, not area munitions like dynamite/bombs) plus the big
+      //    knockback in CONFIG.health.knockback. `damageKey` is stamped at
+      //    spawn (Vehicle.tank/police.damageKey) so the same projectile
+      //    kind pays either CONFIG.health.damage.tankShell or .shell.
+      shell: { speed: 200, width: 8, height: 4, color: '#e8c452' },
+      // -- Lightning bolt (§5.1) — new in Session 7. Straight down from
+      //    wherever the cloud currently is; direct-hit damage only.
+      bolt: { speed: 460, width: 4, height: 30, color: '#f5e79a' },
+      // -- Dropped environmental weapon (§4.3/§5.1/§6) — new in Session 7.
+      //    Straight down from wherever it was punched loose; destroys the
+      //    first Tank/Police/Helicopter its bounding box reaches. Colored
+      //    per-definition (CONFIG.pickups.definitions) rather than fixed.
+      dropped: { fallSpeed: 150, width: 14, height: 14 },
     },
   },
 
   /* ---- SpawnDirector (10-architecture.md §11.3, 04-military-hazards §5.1)
-     "Present every day: National Guardsmen and helicopters." Cadence values
-     only — the day/difficulty scaling itself (§5.2) is Session 7/9's job.
+     "Present every day: National Guardsmen and helicopters." Base cadence
+     values; Game.scaledInterval/scaledMax (below CONFIG.difficulty) scale
+     every one of these against the difficulty knob, so raising the scalar
+     shrinks intervals and raises caps without touching these base numbers.
      [INFERRED] every value — nothing is documented.                       */
   spawnDirector: {
     guardsmanWindowInterval: 4.0,   // s between window-Guardsman spawn rolls
@@ -527,6 +644,43 @@ const CONFIG = {
     maxStreetGuardsmen: 1,          // concurrent
     helicopterInterval: 14.0,       // s between helicopter spawn rolls
     maxHelicopters: 1,              // concurrent
+    vehicleInterval: 11.0,          // s between tank/police spawn rolls — new Session 7
+    maxVehicles: 1,                 // concurrent
+    paratrooperInterval: 16.0,      // s between paratrooper spawn rolls — new Session 7
+    maxParatroopers: 1,             // concurrent
+    lightningInterval: 13.0,        // s between lightning-cloud spawn rolls — new Session 7
+    maxLightning: 1,                // concurrent
+  },
+
+  /* ---- Difficulty escalation (04-military-hazards §5.2) — new in Session 7
+     "Difficulty ramps across days along five axes." Axis 1 ("more
+     buildings") is Session 9's job (CONFIG.buildings.dayLayout is still
+     hardcoded) — everything else routes through this one manual scalar
+     until the real day/level system exists to drive it automatically:
+       axis 2 — Game.scaledInterval/scaledMax shrink SpawnDirector cadences
+                and raise concurrent-unit caps as the scalar rises.
+       axis 2/5 — Game.policeChance() shifts new ground-vehicle spawns from
+                  tank toward police as the scalar rises.
+       axis 3 — Game.bombChance() shifts new helicopters from STRAFE toward
+                BOMB as the scalar rises (read when CONFIG.enemies.helicopter.
+                behaviorMode is left at its 'AUTO' default).
+       axis 4/5 — the same scaledInterval/scaledMax pair covers the lightning
+                  cadence/cap too, so "later loops ... more lightning" is the
+                  same knob as axis 2's "more ground units."
+     [INFERRED — 13-inferred-items.md #41: the GDD confirms each axis's
+     direction, never a rate. `scalar` defaults to 0, which reduces every
+     formula below to Session 6's original flat cadence — nothing scales
+     until something (a debug tweak today, Session 9's day index later)
+     raises it.]                                                          */
+  difficulty: {
+    scalar: 0,
+    cadenceScale: 0.15,       // fractional cadence shrink per scalar point
+    maxUnitGrowth: 0.5,       // +1 concurrent-unit cap per 2 scalar points
+    policeShareBase: 0.25,    // fraction of ground-vehicle spawns that are
+                              // police at scalar 0
+    policeShareGrowth: 0.08,  // + per scalar point, clamped to 1
+    bombChanceGrowth: 0.12,   // chance a new 'AUTO' helicopter bombs instead
+                              // of strafes, per scalar point, clamped to 1
   },
 
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
@@ -1402,9 +1556,21 @@ class Pickup extends Entity {
     this.despawn();
   }
 
-  /** §4.2/§4.3 — punched/grabbed before any fuse ran out. */
-  consume(monster) {
+  /**
+   * §4.2/§4.3 — punched/grabbed before any fuse ran out. A `category:
+   * 'weapon'` item (§5.1, new in Session 7) is the one exception: the punch
+   * doesn't eat it at all, it knocks it loose — see Projectile.
+   * spawnDroppedObject. `game` is optional so any other call site (there
+   * currently is none besides Monster.resolvePunch) doesn't break if it
+   * can't reach one; a weapon item simply can't be knocked loose without it.
+   */
+  consume(monster, game) {
     if (!this.alive) return;
+    if (this.def.category === 'weapon') {
+      if (game) game.entities.add(Projectile.spawnDroppedObject(this.x, this.y, this.def));
+      this.despawn();
+      return;
+    }
     if (this.def.heal) monster.heal(this.def.heal, this.def.id);
     if (this.def.damage) monster.applyDamage(this.def.damage, this.def.id);
     this.despawn();
@@ -1619,8 +1785,12 @@ class Human extends Entity {
 class Enemy extends Entity {
   constructor(x, y, w, h, kind) {
     super(x, y, w, h);
-    this.kind = kind;        // 'GUARDSMAN_WINDOW' | 'GUARDSMAN_STREET' | 'HELICOPTER'
+    this.kind = kind;        // 'GUARDSMAN_WINDOW' | 'GUARDSMAN_STREET' | 'HELICOPTER' | ...
     this.behavior = null;    // subclass-defined current behavior/sub-state
+    // §5.1 — new in Session 7: LightningCloud is "a hazard rather than a
+    // unit" and overrides this to false so Game.enemyTargetFor can't ever
+    // find it. Every other Enemy so far is destroyable, hence the default.
+    this.punchable = true;
   }
 }
 
@@ -1905,6 +2075,217 @@ class Helicopter extends Enemy {
 
 
 /* ==========================================================================
+   04-military-hazards §5.1 — Vehicle (Tank / Police)
+
+   "Tank: slow, heavily armored; fires heavy shells that do big damage and
+   large knockback (can knock a monster off a building or across the screen).
+   Punish between shots or drop objects on it. Police car: like a tank but
+   moves and fires faster."
+
+   One class, `variant` picks TANK or POLICE — same one-class-two-flavors
+   shape Guardsman/Helicopter already use. Drives straight across the street
+   from one edge to the other (same one-pass shape as Guardsman's street
+   variant and Helicopter), firing a shell at the nearest monster on an
+   interval, then despawns off the far edge. A connecting punch destroys it
+   outright — "armored" isn't modeled as extra hit points; see the CONFIG
+   comment. Neither variant heals on destruction, and neither checks
+   Monster.isHoldingVictim — 13-inferred-items.md #7 scopes the "holding
+   stops fire" courtesy to the Guardsmen specifically, and #38 covers the
+   rest of what's guessed at here.
+   ========================================================================== */
+class Vehicle extends Enemy {
+  constructor(variant, x, dir) {
+    const V = CONFIG.enemies.vehicle;
+    const spec = variant === 'TANK' ? V.tank : V.police;
+    super(x, CONFIG.world.groundY, V.width, V.height, variant === 'TANK' ? 'TANK' : 'POLICE');
+    this.variant = variant;
+    this.spec = spec;
+    this.dir = dir;
+    this.behavior = 'PATROL';
+    this.fireTimer = spec.fireInterval;
+  }
+
+  static spawn(variant, fromLeft) {
+    const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
+    return new Vehicle(variant, x, fromLeft ? 1 : -1);
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    const V = CONFIG.enemies.vehicle;
+    this.x += this.dir * this.spec.speed * dt;
+
+    this.fireTimer -= dt;
+    if (this.fireTimer <= 0) {
+      this.fireTimer = this.spec.fireInterval +
+        (game.nextSpawnFrac() - 0.5) * 2 * this.spec.fireIntervalJitter;
+      const target = game.nearestMonster(this.x, this.y, V.targetRange);
+      if (target) {
+        const dir = target.x < this.x ? -1 : 1;
+        game.entities.add(Projectile.spawnShell(this.x, this.y, dir, this.spec.damageKey));
+      }
+    }
+
+    if ((this.dir > 0 && this.x > CONFIG.world.rightBound + 20) ||
+        (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
+  }
+
+  /** A connecting punch — no heal, a vehicle isn't food. */
+  consume() {
+    this.alive = false;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    ctx.fillStyle = this.spec.bodyColor;
+    ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
+    ctx.fillStyle = this.spec.turretColor;
+    ctx.fillRect(cx - this.w / 4, feet - this.h - 4, this.w / 2, 4);
+  }
+}
+
+
+/* ==========================================================================
+   04-military-hazards §5.1 — Paratrooper
+
+   "Lands on a rooftop and defends that building; rapid-fires when the
+   monster is on it."
+
+   Descends from cruise altitude straight down onto one specific standing
+   building (picked by Game.trySpawnParatrooper, which also keeps two
+   paratroopers from ever being assigned the same building), lands on its
+   roof, and stays there defending it for the rest of its life. Only fires
+   while a monster is actually attached to that building (Game.
+   monsterOnBuilding) — a monster on a different roof entirely gets no
+   attention from it, which is the whole point of "defends that building."
+   [INFERRED — 13-inferred-items.md #39: drop speed and the rapid-fire
+   interval aren't documented; the fire mechanism itself reuses Guardsman's
+   bullet, since §5.1 gives no separate paratrooper weapon.]
+   ========================================================================== */
+class Paratrooper extends Enemy {
+  constructor(building) {
+    const P = CONFIG.enemies.paratrooper;
+    super(building.x, CONFIG.enemies.helicopter.cruiseAltitudeY, P.width, P.height, 'PARATROOPER');
+    this.building = building;
+    this.behavior = 'DROPPING';
+    this.fireTimer = P.fireInterval;
+  }
+
+  static spawn(building) { return new Paratrooper(building); }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    if (!this.building.standing) { this.alive = false; return; }
+    const P = CONFIG.enemies.paratrooper;
+
+    if (this.behavior === 'DROPPING') {
+      this.y += P.dropSpeed * dt;
+      if (this.y >= this.building.top) {
+        this.y = this.building.top;
+        this.behavior = 'DEFENDING';
+      }
+      return;
+    }
+
+    // DEFENDING (§5.1: "rapid-fires when the monster is on it").
+    this.fireTimer -= dt;
+    if (this.fireTimer <= 0) {
+      this.fireTimer = P.fireInterval + (game.nextSpawnFrac() - 0.5) * 2 * P.fireIntervalJitter;
+      const target = game.monsterOnBuilding(this.building);
+      if (target) {
+        const dir = target.x < this.x ? -1 : 1;
+        game.entities.add(Projectile.spawnBullet(this.x, this.y, dir));
+      }
+    }
+  }
+
+  /** A connecting punch — no heal, same reasoning as the street Guardsman. */
+  consume() {
+    this.alive = false;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const P = CONFIG.enemies.paratrooper;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    if (this.behavior === 'DROPPING') {
+      ctx.fillStyle = P.chuteColor;
+      ctx.fillRect(cx - this.w, feet - this.h - 10, this.w * 2, 6);
+    }
+    ctx.fillStyle = P.color;
+    ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
+    ctx.fillStyle = P.helmetColor;
+    ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, Math.round(this.h * 0.3));
+  }
+}
+
+
+/* ==========================================================================
+   04-military-hazards §5.1 — LightningCloud
+
+   "Drifts over the city and fires lightning bolts; heavy damage on hit. A
+   hazard rather than a unit; scheduled per day."
+
+   Unlike every other Enemy so far, `punchable = false` — it cannot be
+   destroyed, only avoided, per the GDD's own "hazard rather than a unit"
+   framing. Drifts across at a fixed altitude (above the helicopter's own
+   cruise line) firing a bolt straight down from its current position on an
+   interval — no target homing, since a drifting hazard's schedule is a
+   different thing from a unit's fire-control. [INFERRED throughout —
+   13-inferred-items.md #39.]
+   ========================================================================== */
+class LightningCloud extends Enemy {
+  constructor(x, dir) {
+    const L = CONFIG.enemies.lightningCloud;
+    super(x, L.altitudeY, L.width, L.height, 'LIGHTNING_CLOUD');
+    this.dir = dir;
+    this.behavior = 'DRIFT';
+    this.boltTimer = L.boltInterval;
+    this.punchable = false;   // "a hazard rather than a unit" — §5.1
+  }
+
+  static spawn(fromLeft) {
+    const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
+    return new LightningCloud(x, fromLeft ? 1 : -1);
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    const L = CONFIG.enemies.lightningCloud;
+    this.x += this.dir * L.driftSpeed * dt;
+
+    this.boltTimer -= dt;
+    if (this.boltTimer <= 0) {
+      this.boltTimer = L.boltInterval + (game.nextSpawnFrac() - 0.5) * 2 * L.boltIntervalJitter;
+      game.entities.add(Projectile.spawnLightningBolt(this.x, this.y));
+    }
+
+    if ((this.dir > 0 && this.x > CONFIG.world.rightBound + 20) ||
+        (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const L = CONFIG.enemies.lightningCloud;
+    const cx = Math.round(this.renderX(alpha));
+    const cy = Math.round(this.renderY(alpha));
+    ctx.fillStyle = L.color;
+    ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+    if (this.boltTimer < 0.3) {
+      ctx.fillStyle = L.flashColor;
+      ctx.fillRect(cx - this.w / 2 + 3, cy - this.h / 2 + 3, this.w - 6, this.h - 6);
+    }
+  }
+}
+
+
+/* ==========================================================================
    04-military-hazards §5.1 — Projectile
 
    Bullets (Guardsman rifle + helicopter strafe burst), thrown dynamite
@@ -1925,15 +2306,50 @@ class Helicopter extends Enemy {
 class Projectile extends Entity {
   constructor(kind, x, y, w, h) {
     super(x, y, w, h);
-    this.kind = kind;         // 'BULLET' | 'DYNAMITE' | 'BOMB' | 'CHARGE'
+    this.kind = kind;         // 'BULLET' | 'DYNAMITE' | 'BOMB' | 'CHARGE' | 'SHELL' |
+                              // 'LIGHTNING_BOLT' | 'DROPPED_OBJECT'
     this.building = null;     // CHARGE only — the building it's anchored to
     this.fuseTimer = 0;
+    this.damageKey = null;    // SHELL only — 'tankShell' | 'shell'
+    this.color = null;        // DROPPED_OBJECT only — copied from its Pickup def
   }
 
   static spawnBullet(x, y, dir) {
     const P = CONFIG.enemies.projectiles.bullet;
     const p = new Projectile('BULLET', x, y, P.width, P.height);
     p.vx = dir * P.speed;
+    return p;
+  }
+
+  /** Tank/police heavy shell (§5.1) — new in Session 7. Straight line, same
+   * shape as a bullet; `damageKey` picks which CONFIG.health.damage entry
+   * pays out and Monster.applyKnockback does the rest on a direct hit. */
+  static spawnShell(x, y, dir, damageKey) {
+    const P = CONFIG.enemies.projectiles.shell;
+    const p = new Projectile('SHELL', x, y, P.width, P.height);
+    p.vx = dir * P.speed;
+    p.damageKey = damageKey;
+    return p;
+  }
+
+  /** Lightning bolt (§5.1) — new in Session 7. Straight down from wherever
+   * the cloud currently is; no horizontal motion, no homing. */
+  static spawnLightningBolt(x, y) {
+    const P = CONFIG.enemies.projectiles.bolt;
+    const p = new Projectile('LIGHTNING_BOLT', x, y, P.width, P.height);
+    p.vy = P.speed;
+    return p;
+  }
+
+  /** Environmental weapon knocked loose from a building cell (§4.3/§5.1) —
+   * new in Session 7. Straight down; destroys the first Tank/Police/
+   * Helicopter it reaches (Game.groundOrAirUnitHitBy), otherwise vanishes
+   * harmlessly at street level. [INFERRED — 13-inferred-items.md #40.] */
+  static spawnDroppedObject(x, y, def) {
+    const P = CONFIG.enemies.projectiles.dropped;
+    const p = new Projectile('DROPPED_OBJECT', x, y, P.width, P.height);
+    p.vy = P.fallSpeed;
+    p.color = def.color;
     return p;
   }
 
@@ -1979,7 +2395,7 @@ class Projectile extends Entity {
       if (this.fuseTimer <= 0) { this.explode(game, null); return; }
     }
 
-    if (this.kind === 'BULLET') {
+    if (this.kind === 'BULLET' || this.kind === 'SHELL') {
       if (this.x < -20 || this.x > CONFIG.view.width + 20) { this.alive = false; return; }
     } else if (this.kind === 'BOMB') {
       const b = game.buildingAt(this.x);
@@ -1987,12 +2403,28 @@ class Projectile extends Entity {
       if (this.y >= CONFIG.world.groundY) { this.explode(game, null); return; }
     } else if (this.kind === 'DYNAMITE') {
       if (this.y >= CONFIG.world.groundY) { this.explode(game, null); return; }
+    } else if (this.kind === 'LIGHTNING_BOLT') {
+      if (this.y >= CONFIG.world.groundY) { this.alive = false; return; }
+    } else if (this.kind === 'DROPPED_OBJECT') {
+      // Only reaches Tank/Police/Helicopter, never a monster — see the
+      // CONFIG comment on CONFIG.enemies.projectiles.dropped.
+      const target = game.groundOrAirUnitHitBy(this);
+      if (target) { target.alive = false; this.alive = false; }
+      else if (this.y >= CONFIG.world.groundY) { this.alive = false; }
+      return;
     }
 
     const hit = game.monsterHitBy(this);
     if (hit) {
       if (this.kind === 'BULLET') {
         hit.applyDamage(CONFIG.health.damage.bullet, 'BULLET');
+        this.alive = false;
+      } else if (this.kind === 'SHELL') {
+        hit.applyDamage(CONFIG.health.damage[this.damageKey], this.damageKey);
+        hit.applyKnockback(this.x, CONFIG.health.knockback.shellSpeedX, CONFIG.health.knockback.shellSpeedY);
+        this.alive = false;
+      } else if (this.kind === 'LIGHTNING_BOLT') {
+        hit.applyDamage(CONFIG.health.damage.lightning, 'lightning');
         this.alive = false;
       } else {
         this.explode(game, hit);
@@ -2054,6 +2486,9 @@ class Projectile extends Entity {
     const color = this.kind === 'BULLET' ? P.bullet.color
       : this.kind === 'DYNAMITE' ? P.dynamite.color
       : this.kind === 'BOMB' ? P.bomb.color
+      : this.kind === 'SHELL' ? P.shell.color
+      : this.kind === 'LIGHTNING_BOLT' ? P.bolt.color
+      : this.kind === 'DROPPED_OBJECT' ? this.color
       : CONFIG.enemies.demolitionCharge.color;
     const warn = this.fuseTimer > 0 && this.fuseTimer < 0.4 && Math.floor(this.fuseTimer * 10) % 2 === 0;
     ctx.fillStyle = warn ? '#ffffff' : color;
@@ -2139,6 +2574,12 @@ class Monster extends Entity {
        holds its designated victim, only the National Guardsmen stop
        firing" — see isHoldingVictim. */
     this.holding = null;
+
+    /* 04-military-hazards §5.1 — new in Session 7. Counts down after
+       knockOff/applyKnockback (see launchAir); while positive, updateAir
+       leaves the forced knockback vx alone instead of recomputing it from
+       input every tick. */
+    this.knockbackTimer = 0;
   }
 
   /** 0..1, for the debug bar and (Session 8) the real HUD. */
@@ -2256,7 +2697,7 @@ class Monster extends Entity {
     const enemy = target.building.enemyAt(target.col, target.row);
     if (enemy) { enemy.consume(this); return 'eatEnemy'; }
     const pickup = target.building.pickupAt(target.col, target.row);
-    if (pickup) { pickup.consume(this); return 'eat'; }
+    if (pickup) { pickup.consume(this, game); return 'eat'; }
     // The return value is the §6 break kind ('partial' / 'full'). Nothing
     // reads it until Session 8 wires up the ScoreSystem.
     return target.building.damageCell(
@@ -2366,15 +2807,43 @@ class Monster extends Entity {
    * callers apply their own damage separately via applyDamage (see
    * Pickup.trigger). [INFERRED] speeds — 13-inferred-items.md #2.
    */
+  /**
+   * Shared by knockOff and applyKnockback (04-military-hazards §5.1) — new
+   * in Session 7, though it now also carries the pre-existing dynamite/
+   * photographer/bather pop. Detaches to AIR with a forced velocity and
+   * arms `knockbackTimer` so updateAir doesn't overwrite `vx` from input on
+   * the very next tick — without it, a shove's horizontal component never
+   * actually moved the monster anywhere (13-inferred-items.md #37).
+   */
+  launchAir(vx, vy, duration) {
+    this.detach(null, false);
+    this.vx = vx;
+    this.vy = vy;
+    this.knockbackTimer = duration;
+    this.releaseHolding();
+  }
+
   knockOff() {
     if (this.defeated) return;
     const H = CONFIG.health;
     const b = this.attached;
     const outward = b ? (this.x < b.x ? -1 : 1) : this.facing;
-    this.detach(null, false);
-    this.vx = outward * H.knockOffSpeedX;
-    this.vy = H.knockOffSpeedY;
-    this.releaseHolding();
+    this.launchAir(outward * H.knockOffSpeedX, H.knockOffSpeedY, H.knockback.duration);
+  }
+
+  /**
+   * 04-military-hazards §5.1 — a tank/police shell's "large knockback ...
+   * can knock a monster off a building or across the screen." Same
+   * detach-to-AIR shape as knockOff, but the push direction is away from
+   * wherever the shell was fired from rather than away from the building —
+   * a shell fired from the far side of a building should still be able to
+   * blow the monster clear of it, not just off the near edge. [INFERRED —
+   * no speed/arc is documented; 13-inferred-items.md #37.]
+   */
+  applyKnockback(fromX, speedX, speedY) {
+    if (this.defeated) return;
+    const dirX = this.x < fromX ? -1 : 1;
+    this.launchAir(dirX * speedX, speedY, CONFIG.health.knockback.duration);
   }
 
   update(dt, game) {
@@ -2508,13 +2977,24 @@ class Monster extends Entity {
     }
   }
 
-  /* ---- AIR: ballistic, with jump-to-grab and roof landing -------------- */
+  /* ---- AIR: ballistic, with jump-to-grab and roof landing --------------
+     Air control is normally recomputed from input every tick (no momentum
+     carries from the surface just left — see 13-inferred-items.md #12), but
+     that would zero out a knockback's horizontal component on the very next
+     tick, before it ever moved the monster anywhere. `knockbackTimer` (set by
+     Monster.launchAir — new in Session 7) suppresses input-driven vx for a
+     short window so a shove actually carries the monster somewhere instead
+     of evaporating instantly; see 13-inferred-items.md #37. */
   updateAir(dt, game, input, dir) {
     const M = CONFIG.monster;
     const W = CONFIG.world;
 
-    if (dir !== 0) this.facing = dir;
-    this.vx = dir * M.walkSpeed * M.airControl;
+    if (this.knockbackTimer > 0) {
+      this.knockbackTimer = Math.max(0, this.knockbackTimer - dt);
+    } else {
+      if (dir !== 0) this.facing = dir;
+      this.vx = dir * M.walkSpeed * M.airControl;
+    }
     this.vy += M.gravity * dt;
 
     const prevFeet = this.y;
@@ -2901,6 +3381,19 @@ function drawDebug(game) {
       '  heli ' + heli.map(function (h) { return h.mode + '/' + h.behavior; }).join(',') +
       '  PROJECTILES ' + game.entities.ofType(Projectile).length);
   }
+  // Session 7 readout: tanks/police, paratroopers, lightning clouds, and the
+  // difficulty scalar driving every §5.2 axis this session can express.
+  // Goes away with the rest of the debug strip in Session 8.
+  const vehicles = game.entities.ofType(Vehicle);
+  const paratroopers = game.entities.ofType(Paratrooper);
+  const clouds = game.entities.ofType(LightningCloud);
+  if (vehicles.length || paratroopers.length || clouds.length || CONFIG.difficulty.scalar > 0) {
+    const tanks = vehicles.filter(function (v) { return v.variant === 'TANK'; }).length;
+    const police = vehicles.filter(function (v) { return v.variant === 'POLICE'; }).length;
+    lines.push('VEHICLES ' + vehicles.length + ' (tank ' + tanks + ' police ' + police + ')' +
+      '  PARATROOPERS ' + paratroopers.length + '  LIGHTNING ' + clouds.length +
+      '  DIFFICULTY ' + CONFIG.difficulty.scalar);
+  }
   drawDebugHealthBars(game);
   // Session 3 readout: per-building structure %, state, and who owns the
   // collapse. Goes away with the rest of the debug strip in Session 8.
@@ -2994,10 +3487,14 @@ class Game {
 
     /* 04-military-hazards §5.1 — SpawnDirector cadence timers and its own
        deterministic pseudo-random counter (same no-RNG convention as
-       `holdSeed` above). Reset per day. */
+       `holdSeed` above). Reset per day. Vehicle/paratrooper/lightning
+       timers are new in Session 7. */
     this.windowGuardsmanTimer = 0;
     this.streetGuardsmanTimer = 0;
     this.helicopterTimer = 0;
+    this.vehicleTimer = 0;
+    this.paratrooperTimer = 0;
+    this.lightningTimer = 0;
     this.spawnSeed = 0;
 
     // Run-level data, persisted across state transitions (§11.2).
@@ -3091,6 +3588,9 @@ class Game {
     this.windowGuardsmanTimer = 0;
     this.streetGuardsmanTimer = 0;
     this.helicopterTimer = 0;
+    this.vehicleTimer = 0;
+    this.paratrooperTimer = 0;
+    this.lightningTimer = 0;
     this.spawnSeed = 0;
     this.spawnBuildings();
     this.spawnMonsters();
@@ -3143,31 +3643,84 @@ class Game {
   }
 
   /**
+   * 04-military-hazards §5.2 — the single manual difficulty knob
+   * (CONFIG.difficulty.scalar) standing in for Session 9's real day/level
+   * system. Every axis this session can express without LevelData (axis 1,
+   * "more buildings," is out of scope — see the CONFIG comment) routes
+   * through these three helpers, so `updateSpawnDirector` and every
+   * trySpawn* method below read scaled numbers instead of the raw
+   * CONFIG.spawnDirector/CONFIG.enemies values directly. At `scalar = 0`
+   * every one of them is the identity — scaledInterval/scaledMax return
+   * their input unchanged and policeChance/bombChance return their base
+   * fraction — so this is a pure addition on top of Session 6's behavior.
+   * [INFERRED — 13-inferred-items.md #41: the GDD confirms each axis's
+   * direction, never a rate.]
+   */
+  scaledInterval(base) {
+    return base / (1 + CONFIG.difficulty.scalar * CONFIG.difficulty.cadenceScale);
+  }
+
+  scaledMax(base) {
+    return base + Math.floor(CONFIG.difficulty.scalar * CONFIG.difficulty.maxUnitGrowth);
+  }
+
+  /** §5.2 axis 2/5: "more and faster ground units ... more police [on later
+   * loops]" — the fraction of new tank/police spawns that roll police. */
+  policeChance() {
+    const D = CONFIG.difficulty;
+    return clamp(D.policeShareBase + D.scalar * D.policeShareGrowth, 0, 1);
+  }
+
+  /** §5.2 axis 3: "helicopters shift from strafing to bombing." Only read
+   * when CONFIG.enemies.helicopter.behaviorMode is left at 'AUTO'. */
+  bombChance() {
+    const D = CONFIG.difficulty;
+    return clamp(D.scalar * D.bombChanceGrowth, 0, 1);
+  }
+
+  /**
    * 10-architecture §11.3 SpawnDirector — "Present every day: National
-   * Guardsmen and helicopters." Three independent cadence timers, each
-   * capped at its own `CONFIG.spawnDirector.max*` concurrent count. Day/
-   * difficulty scaling (§5.2) is Session 7/9's job; this just keeps a
-   * steady trickle going per `CONFIG.spawnDirector`.
+   * Guardsmen and helicopters." Six independent cadence timers (three new
+   * in Session 7 — vehicles, paratroopers, lightning), each capped at its
+   * own scaled `CONFIG.spawnDirector.max*` concurrent count.
    */
   updateSpawnDirector(dt) {
     const S = CONFIG.spawnDirector;
 
     this.windowGuardsmanTimer -= dt;
     if (this.windowGuardsmanTimer <= 0) {
-      this.windowGuardsmanTimer = S.guardsmanWindowInterval;
+      this.windowGuardsmanTimer = this.scaledInterval(S.guardsmanWindowInterval);
       this.trySpawnWindowGuardsman();
     }
 
     this.streetGuardsmanTimer -= dt;
     if (this.streetGuardsmanTimer <= 0) {
-      this.streetGuardsmanTimer = S.guardsmanStreetInterval;
+      this.streetGuardsmanTimer = this.scaledInterval(S.guardsmanStreetInterval);
       this.trySpawnStreetGuardsman();
     }
 
     this.helicopterTimer -= dt;
     if (this.helicopterTimer <= 0) {
-      this.helicopterTimer = S.helicopterInterval;
+      this.helicopterTimer = this.scaledInterval(S.helicopterInterval);
       this.trySpawnHelicopter();
+    }
+
+    this.vehicleTimer -= dt;
+    if (this.vehicleTimer <= 0) {
+      this.vehicleTimer = this.scaledInterval(S.vehicleInterval);
+      this.trySpawnVehicle();
+    }
+
+    this.paratrooperTimer -= dt;
+    if (this.paratrooperTimer <= 0) {
+      this.paratrooperTimer = this.scaledInterval(S.paratrooperInterval);
+      this.trySpawnParatrooper();
+    }
+
+    this.lightningTimer -= dt;
+    if (this.lightningTimer <= 0) {
+      this.lightningTimer = this.scaledInterval(S.lightningInterval);
+      this.trySpawnLightning();
     }
   }
 
@@ -3177,7 +3730,7 @@ class Game {
   trySpawnWindowGuardsman() {
     const S = CONFIG.spawnDirector;
     const active = this.entities.ofType(Guardsman).filter(function (g) { return g.alive && g.variant === 'WINDOW'; });
-    if (active.length >= S.maxWindowGuardsmen) return;
+    if (active.length >= this.scaledMax(S.maxWindowGuardsmen)) return;
 
     const standing = this.buildings.filter(function (b) { return b.standing; });
     if (!standing.length) return;
@@ -3202,7 +3755,7 @@ class Game {
   trySpawnStreetGuardsman() {
     const S = CONFIG.spawnDirector;
     const active = this.entities.ofType(Guardsman).filter(function (g) { return g.alive && g.variant === 'STREET'; });
-    if (active.length >= S.maxStreetGuardsmen) return;
+    if (active.length >= this.scaledMax(S.maxStreetGuardsmen)) return;
 
     const standing = this.buildings.filter(function (b) { return b.standing; });
     if (!standing.length) return;
@@ -3212,12 +3765,57 @@ class Game {
     this.entities.add(Guardsman.spawnOnStreet(x, fromLeft ? 1 : -1, target));
   }
 
+  /** §5.2 axis 3: 'AUTO' (the Session 7 default) rolls STRAFE vs. BOMB off
+   * `bombChance()`; an explicit 'STRAFE'/'BOMB' override still forces a
+   * single mode, same as Session 6's original manual flag. */
   trySpawnHelicopter() {
     const S = CONFIG.spawnDirector;
     const active = this.entities.ofType(Helicopter).filter(function (h) { return h.alive; });
-    if (active.length >= S.maxHelicopters) return;
+    if (active.length >= this.scaledMax(S.maxHelicopters)) return;
     const fromLeft = this.nextSpawnFrac() < 0.5;
-    this.entities.add(Helicopter.spawn(fromLeft, CONFIG.enemies.helicopter.behaviorMode));
+    const configured = CONFIG.enemies.helicopter.behaviorMode;
+    const mode = configured === 'AUTO'
+      ? (this.nextSpawnFrac() < this.bombChance() ? 'BOMB' : 'STRAFE')
+      : configured;
+    this.entities.add(Helicopter.spawn(fromLeft, mode));
+  }
+
+  /** §5.1/§5.2 — new in Session 7. Tanks and police share one cadence and
+   * one concurrent cap ("more and faster ground units ... tanks and police
+   * stacked"); which one rolls is `policeChance()`, so a higher difficulty
+   * scalar skews the mix toward police without touching cadence at all. */
+  trySpawnVehicle() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Vehicle).filter(function (v) { return v.alive; });
+    if (active.length >= this.scaledMax(S.maxVehicles)) return;
+    const fromLeft = this.nextSpawnFrac() < 0.5;
+    const variant = this.nextSpawnFrac() < this.policeChance() ? 'POLICE' : 'TANK';
+    this.entities.add(Vehicle.spawn(variant, fromLeft));
+  }
+
+  /** §5.1 — new in Session 7. Picks a still-standing building not already
+   * defended by a live paratrooper (dropping or landed) — see
+   * Game.monsterOnBuilding for the "is a monster on it" half of §5.1's
+   * "defends that building" rule. */
+  trySpawnParatrooper() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Paratrooper).filter(function (p) { return p.alive; });
+    if (active.length >= this.scaledMax(S.maxParatroopers)) return;
+
+    const defended = active.map(function (p) { return p.building; });
+    const standing = this.buildings.filter(function (b) { return b.standing && defended.indexOf(b) === -1; });
+    if (!standing.length) return;
+    const building = standing[Math.floor(this.nextSpawnFrac() * standing.length) % standing.length];
+    this.entities.add(Paratrooper.spawn(building));
+  }
+
+  /** §5.1 — new in Session 7. */
+  trySpawnLightning() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(LightningCloud).filter(function (l) { return l.alive; });
+    if (active.length >= this.scaledMax(S.maxLightning)) return;
+    const fromLeft = this.nextSpawnFrac() < 0.5;
+    this.entities.add(LightningCloud.spawn(fromLeft));
   }
 
   /** §7 day clear: every building on the board is rubble. Session 9 acts on it. */
@@ -3340,11 +3938,13 @@ class Game {
 
   /**
    * 04-military-hazards §5.1 — the free-roaming (not window-anchored) Enemy
-   * a punch connects with, if any: a street Guardsman mid-run/plant, or a
-   * helicopter dipped low enough during its strafing dive. Same shape as
-   * `humanTargetFor` — tested against `getPunchBox()`, best-overlap wins.
-   * Window Guardsmen are excluded here; they're found the cell-anchored way
-   * (`Building.enemyAt`), same as Human/Pickup.
+   * a punch connects with, if any: a street Guardsman mid-run/plant, a
+   * helicopter dipped low enough during its strafing dive, a tank/police
+   * vehicle, or a landed paratrooper. Same shape as `humanTargetFor` —
+   * tested against `getPunchBox()`, best-overlap wins. Window Guardsmen are
+   * excluded here; they're found the cell-anchored way (`Building.enemyAt`),
+   * same as Human/Pickup. `punchable === false` (LightningCloud, new in
+   * Session 7 — "a hazard rather than a unit") is excluded outright.
    */
   enemyTargetFor(monster) {
     const box = monster.getPunchBox();
@@ -3353,7 +3953,7 @@ class Game {
     const enemies = this.entities.ofType(Enemy);
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
-      if (!e.alive) continue;
+      if (!e.alive || !e.punchable) continue;
       if (e instanceof Guardsman && e.variant === 'WINDOW') continue;
       const ox = Math.min(box.x + box.w, e.right) - Math.max(box.x, e.left);
       const oy = Math.min(box.y + box.h, e.bottom) - Math.max(box.y, e.top);
@@ -3398,6 +3998,36 @@ class Game {
       const ox = Math.min(projectile.right, m.right) - Math.max(projectile.left, m.left);
       const oy = Math.min(projectile.bottom, m.bottom) - Math.max(projectile.top, m.top);
       if (ox > 0 && oy > 0) return m;
+    }
+    return null;
+  }
+
+  /** 04-military-hazards §5.1 — new in Session 7. The live, non-defeated
+   * monster currently on (clinging to or standing atop) a specific
+   * building, if any — a Paratrooper's "only fires when a monster is on
+   * its building" gate. */
+  monsterOnBuilding(building) {
+    const monsters = this.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (!m.defeated && m.attached === building) return m;
+    }
+    return null;
+  }
+
+  /** 04-military-hazards §5.1/§4.3 — new in Session 7. The first live
+   * Tank/Police/Helicopter a dropped environmental weapon's bounding box
+   * overlaps, if any — "dropped onto ground and air units." Paratroopers
+   * and Guardsmen are already vulnerable to a direct punch and aren't
+   * included; see the CONFIG comment on CONFIG.enemies.projectiles.dropped. */
+  groundOrAirUnitHitBy(projectile) {
+    const candidates = this.entities.ofType(Vehicle).concat(this.entities.ofType(Helicopter));
+    for (let i = 0; i < candidates.length; i++) {
+      const e = candidates[i];
+      if (!e.alive) continue;
+      const ox = Math.min(projectile.right, e.right) - Math.max(projectile.left, e.left);
+      const oy = Math.min(projectile.bottom, e.bottom) - Math.max(projectile.top, e.top);
+      if (ox > 0 && oy > 0) return e;
     }
     return null;
   }
@@ -3634,6 +4264,7 @@ function boot() {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
     Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
+    Vehicle, Paratrooper, LightningCloud,
   };
   return game;
 }

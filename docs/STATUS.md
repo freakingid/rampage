@@ -1,15 +1,15 @@
 # Rampage Clone — STATUS
 
 **Phase:** 1 (faithful replica)
-**Last updated:** 2026-07-28 — end of Session 3
-**Last session:** Session 3 — Destruction & collapse
-**Next session:** Session 4 — Eating & health
+**Last updated:** 2026-07-29 — end of Session 4
+**Last session:** Session 4 — Eating & health
+**Next session:** Session 5 — Civilians & designated victims
 
 ---
 
 ## Current state
 
-**Playable?** Yes, in the sense that matters — you can now knock the whole city down. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. No health, no score, no enemies yet, so nothing pushes back.
+**Playable?** Yes, and now there's something to manage. A monster walks a street of five buildings, climbs their faces, walks their roofs, punches sections apart, and brings buildings down on top of itself if it doesn't jump clear. Punching open a wall section reveals an item — food heals, bad items and live electrical hurt, wall dynamite has a fuse, a photographer or bathtub bather will knock the monster off the building if not eaten fast enough. Energy hitting zero reverts the monster to a human placeholder that walks off screen. Still no score, no enemies, no civilians yet, so nothing else pushes back.
 
 **What exists:**
 - `index.html` — the game. Single self-contained file, no build step, opens directly in a browser.
@@ -29,7 +29,7 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 | Monster movement | ✅ walk / jump / punch anim, climb, cling, rooftop walk, jump-to-grab |
 | Buildings & climbing | ✅ `Building` cell grid + hardcoded 5-building day + full ground↔face↔roof traversal |
 | Destruction & collapse | ✅ punch damage from ground/face, STANDING→SHAKING→RUBBLE, roof-drop, dust puff, fall damage, `causedBy` attribution |
-| Eating & health | 🟨 `Monster.applyDamage(amount, source)` is the funnel Session 4 fills in; only fall damage routes through it today, into a `damageTaken` counter |
+| Eating & health | ✅ per-monster energy bar, `applyDamage`/`heal` funnel, `Pickup` entities (food/bad/electrical/dynamite/photographer/bather/neutral) revealed on punch, defeat → revert-to-human → walk-off, debug health bars |
 | Civilians & designated victims | ⬜ not started — victim ids are in `CONFIG.monsterTypes` |
 | Military — Guardsmen, helicopters | ⬜ not started |
 | Military — tanks, police, paratroopers, lightning | ⬜ not started |
@@ -41,6 +41,17 @@ P2 (arrows + `.` `/`) and P3 (IJKL + O/P) key maps exist as data but no second m
 ---
 
 ## What changed last session
+
+Session 4 — eating and health, all inside `index.html`:
+
+- **`CONFIG.health`** (§4.1) — `maxEnergy: 100`, the post-defeat `walkOffSpeed`, the knock-off pop velocities, and a `damage` table for every §4.1 source that has no `Pickup`/item of its own: `fall` (moved here from `CONFIG.monster.fallDamage`, still the only one actually called), plus named placeholders for `bullet`, `dynamiteThrown`, `shell`, `tankShell`, `lightning`, `underwaterPerSecond` and `monsterPunch` — not called by anything yet, but the name and number are ready for the session that adds the thing that fires them, same pattern as Session 3's `causedBy: null`.
+- **`CONFIG.pickups`** (§4.2/§4.3) — one `definitions` list covering all 16 items from the GDD (5 food, 2 bad, 4 electrical, wall dynamite, photographer, bather, toilet, empty bathtub) with their heal/damage/fuse values, and a deterministic `spawnCycle` that picks which item shows up in which cell (no RNG — same trick as `Building.windowLit`).
+- **`Monster.energy`/`applyDamage`/`heal`** (§4.1) — `applyDamage(amount, source)` (the funnel Session 3 left as a stub) now does real bookkeeping: clamps energy into `[0, maxEnergy]`, records `lastDamageSource`, and calls `beginDefeat()` the instant energy hits 0. `heal(amount, source)` is the new food-side half of the same funnel. Both are no-ops once `defeated` — a monster walking off can't be re-damaged or re-healed.
+- **Defeat & walk-off** (§4.1) — a new `Stance.DEFEATED`, outside the normal traversal graph. `beginDefeat()` (guarded so it only ever fires once) detaches from any building, snaps `y` to the street, and picks a walk-off direction toward whichever screen edge is nearer — **[INFERRED]**, see `13-inferred-items.md #23` for what the GDD doesn't say about a mid-air/mid-building defeat. `updateDefeated` then walks it offscreen reading no input at all, and despawns (`alive = false`) once fully clear. `Monster.draw` swaps to a small placeholder `drawHuman()` render while defeated.
+- **`Pickup extends Entity`** (§4.2/§4.3) — anchored to one building cell, spawned by `Building.spawnPickup` the moment a punch opens that cell to HOLE. `consume(monster)` applies its `heal`/`damage` and removes it — this is what a punch on an already-open cell does instead of damaging the cell further (`Monster.resolvePunch` checks `Building.pickupAt` first: an item present means eat, not punch). `fuse` items (wall dynamite, photographer, bather) also carry `fuseDamage`/`fuseKnockOff`, applied by `trigger()` if the timer runs out unconsumed — only to monsters still attached to that building, via the new `Monster.knockOff()`. If the building the pickup belongs to collapses first, the pickup despawns with it (items don't survive into rubble — deferred, `13-inferred-items.md #26`).
+- **Debug health bars** — a small bar per live monster drawn above the existing debug text (`drawDebugHealthBars`, loops over however many monsters are actually in play), plus the monster telemetry line now reports energy/DMG-source/HEAL-source/DEFEATED instead of the old raw `damageTaken` counter. Temporary, same as the rest of the debug strip — real bars are Session 8's HUD.
+
+**The punch-to-eat sequence, since it's the non-obvious part.** A cell has to be punched twice to open (INTACT→CRACKED→HOLE, unchanged from Session 3) and the second punch is what reveals the item. A *third* punch on that same cell doesn't damage it further — `resolvePunch` finds the pickup and eats it instead, so the cell stays at HOLE. Only a *fourth* punch, once the item is already gone, finally clears the cell to GONE. This is what makes "punching is fast, a greedy player will sometimes grab the wrong thing" (§4.3) make sense as a mechanic — the punch that would otherwise progress the wall is the same button that grabs whatever's sitting in it. **[INFERRED — 13-inferred-items.md #24]**, not confirmed against the arcade.
 
 Session 3 — destruction and collapse, all inside `index.html`:
 
@@ -83,6 +94,32 @@ Session 1 — built `index.html` from scratch:
 - All three monster types produce **byte-identical position/stance/animation traces** over the same scripted input, and the type table contains no stat fields.
 
 Not done in a real browser (none available in this environment) — worth one manual open to confirm it looks right.
+
+---
+
+## Verification — Session 4
+
+Same method as Sessions 1-3: the **real** inline script from `index.html`, loaded into a Node `vm` context under a minimal DOM/canvas shim (no jsdom available in this environment — the shim is hand-rolled: a no-op 2D context, a fake canvas element, stubbed `requestAnimationFrame`/`performance.now`), driven tick by tick through the game's own `InputManager` and its real `Building`/`Monster`/`Pickup` classes. **64 checks, all passing.**
+
+Against the SESSION-PLAN Session 4 success criteria:
+
+| Criterion | Result |
+|---|---|
+| Punching cells reveals items; eating food raises the bar and bad items lower it, all values sourced from CONFIG | ✅ driven through the real punch/cell-targeting/reveal/eat sequence (punch 1 cracks, punch 2 opens + reveals, punch 3 eats instead of destroying, punch 4 finally clears to GONE) and separately confirmed every category (`food`, `bad`, `electrical`, `neutral`) applies exactly its `CONFIG.pickups.definitions` value, healing clamps at `maxEnergy` |
+| Exposed dynamite detonates on its timer and knocks the monster off the building | ✅ eating it early applies only `damage` and does not knock off; an unattended fuse applies `fuseDamage` **and** knocks the monster into AIR, detached |
+| Photographer flash and bather water both knock the monster off a face | ✅ tested photographer off a CLING face and bather off a ROOF — both knock into AIR with `fuseDamage`; also confirmed a monster that climbs away before the fuse runs out is untouched (leaving in time is a real choice, not cosmetic) |
+| Energy reaching zero triggers the revert-to-human walk-off exactly once, cleanly | ✅ `defeated` latches on the first zero-energy hit; further `applyDamage`/`heal` calls are no-ops (energy, `walkOffDir`, and position don't move); walk-off proceeds at exactly `CONFIG.health.walkOffSpeed` and despawns once fully offscreen; also checked from CLING (defeated mid-climb still snaps to the street and resolves cleanly) |
+| Every damage source in GDD §4.1 has a code path, even if some aren't reachable yet | ✅ `CONFIG.health.damage` carries a named entry for `fall` (wired), `bullet`, `dynamiteThrown`, `shell`, `tankShell`, `lightning`, `underwaterPerSecond`, `monsterPunch` (not called until their own sessions); `poison`/`cactus`/`electrical`/dynamite-bite/photographer/bather route through `CONFIG.pickups.definitions`; `applyDamage(amount, source)` itself is source-agnostic, confirmed by feeding it an arbitrary source string |
+
+Also checked, as regression cover on Sessions 1-3:
+
+- **Fall damage still works and now reads `CONFIG.health.damage.fall`** (moved from `CONFIG.monster.fallDamage`) — a real `Building.collapse()` call detaches an attached monster and takes exactly that much energy, `lastDamageSource === 'FALL'`.
+- **A 6,000-tick randomized PLAY session** — random input across all six action keys every tick, `game.render()` called every frame too (so `Pickup.draw()` and the defeated-state `drawHuman()` both actually execute, not just `update()`) — produced zero NaN positions, a clean console (no `console.error` calls), and did spawn pickups along the way.
+- **Building.damageCell's GONE-transition safety net** — exercised implicitly by the punch-sequence test (punch 4 clears an already-eaten HOLE cell to GONE without a pickup present) and known to no-op harmlessly if a pickup somehow survives to that point, since nothing in the normal flow reaches `damageCell` on a cell that still has one (`resolvePunch` intercepts first).
+
+**What wasn't (re-)verified here, on purpose:** the full punch/collapse/traversal invariants Sessions 1-3 already covered exhaustively (146k+ tick fuzzing, escape-window sweeps, frame-rate independence). Nothing in Session 4 touches movement, climbing, or the collapse trigger math, so re-running those suites wasn't worth the time; the fall-damage and randomized-smoke checks above are enough to catch a Session-4 change that broke something upstream.
+
+Not opened in a real browser (none available in this environment) — worth one manual open, especially to eyeball the item icons and the debug health bars against the rest of the debug strip.
 
 ---
 
@@ -165,16 +202,15 @@ A frame was also rasterised from the game's real draw calls to confirm it looks 
 
 ## What's next
 
-**Session 4 — Eating & health.** The health economy: per-monster energy bar, all damage routed through one call, defeat/revert-to-human, `Pickup` entities revealed by punching cells, bad items, dynamite.
+**Session 5 — Civilians & designated victims.** People in windows: edible, grabbable, and one special victim per monster (woman→George, middle-aged man→Lizzie, businessman→Ralph). Grab/hold/struggle-free/eat sequence; eating a civilian heals per `CONFIG`.
 
 Seams already in place for it:
-- **`Monster.applyDamage(amount, source)` is the funnel.** Every damage source is supposed to route through it; Session 3 replaced its body with a `damageTaken` counter and calls it from exactly one place (fall damage). Session 4 swaps the body for real energy bookkeeping and the defeat check. Keep the signature.
-- **`CONFIG.monster.fallDamage` (30) is a placeholder** sitting in the monster block because there was no health block to put it in. Session 4 should decide whether damage values move into a `CONFIG.health` section — if so, move this one with them.
-- **`Building.damageCell` is where a punch lands**, so it's the natural place to reveal a `Pickup` when a cell opens — the break kind it already returns tells you whether a hole just opened.
-- **Rubble is drawn but inert.** §3.3 says a rubble mound "can still contain exposed food/items to grab"; nothing hangs off it yet.
-- `Building.cellRect(col, row)` gives the world-space rect of any cell, which is where a revealed item belongs.
+- **`Monster.heal(amount, source)` already exists** — eating a civilian is another `heal` call with its own source string, same as any food `Pickup`. No new funnel needed.
+- **`Pickup` is a reasonable template for `Human`** but they're deliberately not the same class — a civilian flees, can be grabbed/held (not just eaten in one hit), and needs a role flag (civilian / designated victim). Don't retrofit `Pickup` into it; §01-monsters §2.3 and §03-eating-health together are what define `Human`.
+- **`CONFIG.monsterTypes[id].designatedVictim`** already holds the victim id per monster type (set in Session 1) — Session 5 is what finally reads it.
+- **The "Guardsmen stop firing while holding" hook** (13-inferred-items.md #7) has nowhere to attach yet since Guardsmen don't exist until Session 6 — just leave the flag/behavior ready to be read, same pattern as `causedBy: null`.
 
-**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents` and `damageCell`'s return value), third-party collapse sources (Session 6 calls `beginShaking(null, 'thirdParty')` — the path is already there and tested), and day-clear transition (Session 9; `Game.dayCleared()` already returns the right answer, nothing acts on it).
+**Not done, deliberately left for their own sessions:** scoring numbers (Session 8 reads `Game.collapseEvents`, `damageCell`'s return value, and will need a hook for civilian/pickup scoring too), items surviving a building's collapse into rubble (13-inferred-items.md #26 — §3.3 says rubble can hold items; deferred again), third-party collapse sources (Session 6), day-clear transition (Session 9).
 
 Success criteria are in `docs/sessions/SESSION-PLAN.md`.
 
@@ -186,7 +222,7 @@ Anything implemented from an inference rather than a confirmed source gets logge
 
 | # | Item | Where | Status |
 |---|---|---|---|
-| 1 | Damage values, health-bar size, regen amounts | `CONFIG` | **`CONFIG.monster.fallDamage = 30` set in Session 3** as the first placeholder. Everything else pending Session 4 |
+| 1 | Damage values, health-bar size, regen amounts | `CONFIG.health`, `CONFIG.pickups` | **filled in Session 4.** `maxEnergy = 100`; fall damage moved here from `CONFIG.monster.fallDamage`; per-item heal/damage values in `CONFIG.pickups.definitions`; knock-off speeds; walk-off speed. Retune all of it in Session 12 |
 | 2 | Movement speed, jump arc, punch cadence | `CONFIG.monster` | **first-pass values set in Session 1** — walk 84 px/s, jump 270 px/s vs gravity 900 (≈40 px apex, 0.6 s airtime), punch 0.20 s. All guesses; retune in Session 12 |
 | 3 | **Building collapse threshold** | `CONFIG.buildings` | **chosen in Session 3, and the biggest guess in the session.** `collapseStructureFraction 0.5` · `collapseOnBottomRowGone true` · `roofDropStructureFraction 0.8` · `shakeDuration 1.2 s`. The GDD says outright that the real trigger is undocumented and proposes this model; the four numbers are mine. Measured consequences are in the Verification section. Retune in Session 12 |
 | 4 | Enemy fire rates, projectile speeds, spawn cadences | `CONFIG` | not yet implemented |
@@ -205,6 +241,12 @@ Anything implemented from an inference rather than a confirmed source gets logge
 | 17 | **Rubble is scenery** — new in Session 3 | `Building.drawRubble` | Not climbable, not landable, doesn't block the street. §3.3 only says it's a mound that can hold items. Consistent with #13 (street-as-a-lane) |
 | 18 | **Fall damage is a straight drop** — new in Session 3 | `Building.collapse` | Detach to AIR with `vy = 0`, no knockback pop, no lateral throw. §3.3 describes damage but no knockback |
 | 19 | **Cell HP spread across damage states** — new in Session 3 | `cellStateForHp` | `cellHp` is divided evenly across the three non-GONE states, so one punch = one state at the current value of 3 and the constant stays tunable. The GDD names the states but not their HP curve |
+| 20 | **Item distribution/identity per revealed cell** — new in Session 4 | `CONFIG.pickups.spawnCycle` | Every cell that opens to HOLE reveals exactly one item, picked by a deterministic round-robin keyed off cell position. Both the density ("always something") and the cycle order are guesses |
+| 21 | **Photographer/bather: no health cost if eaten in time** — new in Session 4 | `CONFIG.pickups.definitions` | §4.3 says "eat them before/fast" but not what eating them early does. Implemented as nothing (no `heal`/`damage` on those two definitions) — only the *unbeaten fuse* costs health and knocks off |
+| 22 | **Defeat mid-air/mid-building snaps to the street** — new in Session 4 | `Monster.beginDefeat` | GDD doesn't say what happens if energy hits 0 while airborne or on a building. Implemented as an immediate detach + snap to `groundY`, then the normal walk-off. Also inferred: walk-off direction is whichever screen edge is nearer, and `walkOffSpeed` is its own free value |
+| 23 | **Punching an open cell eats the item, not the wall** — new in Session 4 | `Monster.resolvePunch` | §4.3's "greedy player grabs the wrong thing" only makes sense if punching a HOLE cell is the eat action. A cell needs a *fourth* punch (after the item's gone) to finally reach GONE. Not confirmed against the arcade |
+| 24 | **Knock-off kinematics** | `Monster.knockOff`, `CONFIG.health.knockOffSpeedX/Y` | Fixed outward+upward pop, same for dynamite/photographer/bather, independent of source. Only reaches a monster still attached to that building at the moment the fuse ends |
+| 25 | **Items don't survive a building's collapse** | `Pickup.update` | §3.3 says rubble "can still contain exposed food/items"; Session 4 despawns any live pickup the instant its building stops `standing`. Deferred, not a fidelity claim |
 
 Port decisions (not fidelity claims, recorded so they aren't mistaken for one): keyboard mapping, and the 512×384 logical playfield (MCR-3 was 512×480). Both listed in `docs/design/13-inferred-items.md`.
 
@@ -218,6 +260,7 @@ Port decisions (not fidelity claims, recorded so they aren't mistaken for one): 
 | 1 | Core skeleton | 2026-07-28 | ✅ all success criteria verified |
 | 2 | Buildings & climbing | 2026-07-28 | ✅ all success criteria verified |
 | 3 | Destruction & collapse | 2026-07-28 | ✅ all success criteria verified (123 headless checks) |
+| 4 | Eating & health | 2026-07-29 | ✅ all success criteria verified (64 headless checks) |
 
 ---
 
@@ -225,17 +268,18 @@ Port decisions (not fidelity claims, recorded so they aren't mistaken for one): 
 
 _(Anything the next session needs to know that isn't obvious from the code — deferred decisions, known rough edges, things deliberately left unfinished.)_
 
-- **`window.RAMPAGE`** exposes `{ CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance, Building, CellState, BuildingState, DustPuff, cellStateForHp }` for console poking and for the headless harness. Keep it exported — the headless tests drive the game entirely through it.
-- **Update order matters now.** Buildings are added to the entity list before monsters, so a building's `update` (and therefore its collapse) runs before any monster's in the same tick. That's what makes the last tick of the SHAKING window unescapable, and it means `Building.collapse` can safely reach into monsters and change their stance — nothing has moved yet that tick. Don't reorder `spawnBuildings` / `spawnMonsters` without thinking about this.
-- **Traversal gates on `building.standing`, not `building.alive`.** A rubble building is still an `alive` entity (it draws the mound and will hold items in Session 4). Anything new that asks "can I be on this building?" must use `standing`.
-- **The four-stance handlers each own their exit conditions.** Session 3 added a fifth way to leave a surface — the building coming down underneath you — and did it in `Building.collapse` rather than in a stance handler, because the building is what knows. The handlers keep a `!b.standing → detach` safety net. Anything else that removes a surface should do the same. The invariant the tests assert is in the Verification section above — reuse it.
+- **`window.RAMPAGE`** exposes `{ CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance, Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup }` for console poking and for the headless harness. Keep it exported — the headless tests drive the game entirely through it.
+- **Update order matters now.** Buildings are added to the entity list before monsters, so a building's `update` (and therefore its collapse) runs before any monster's in the same tick. That's what makes the last tick of the SHAKING window unescapable, and it means `Building.collapse` can safely reach into monsters and change their stance — nothing has moved yet that tick. Don't reorder `spawnBuildings` / `spawnMonsters` without thinking about this. Pickups are added to the entity list dynamically (whenever a punch opens a cell), always after both, so draw order puts item icons on top.
+- **Traversal gates on `building.standing`, not `building.alive`.** A rubble building is still an `alive` entity (it draws the mound). Anything new that asks "can I be on this building?" must use `standing`. `Pickup.update` uses the same flag to know when to despawn.
+- **The four-stance handlers each own their exit conditions**, plus the new `DEFEATED` stance which sits outside that graph entirely — nothing transitions *into* it except `Monster.beginDefeat()` (called from `applyDamage`), and nothing transitions *out* of it (Session 9's continue flow is what eventually will). The `!b.standing → detach` safety net in the CLING/ROOF handlers is unrelated and still there for the building-collapse case.
+- **A cell revealing an item doesn't stop it from being punched — it changes what punching it does.** `Building.pickupAt(col, row)` is the thing to check before assuming a punch on a HOLE cell will progress it; see `Monster.resolvePunch`. Session 5's civilians are a separate system (`Human`, not `Pickup`) but will want the same "check before you punch/grab" shape.
 - **`CONFIG.buildings.dayLayout` has a height constraint**, documented in `CONFIG`: every building must be taller than the jump apex. If Session 9's `LevelData` ever authors a short building, a monster will be able to jump from the street onto its roof, which breaks the street-as-a-lane model. Either keep the constraint or decide deliberately to model the lane some other way.
-- **Rooftop walking uses `walkSpeed`, climbing uses `climbSpeed`** — deliberately different, both guesses.
-- **`getPunchBox()` and `punchTargetRect()` are different boxes on purpose.** The first is the fist the art draws; the second is what damages cells and reaches further back. Debug draws both (yellow / red). Sessions 5, 6 and 10 need to decide which one hits humans, enemies and other monsters — probably `getPunchBox()`, since the centre-reaching trick exists only to solve a building-frontage problem.
-- **Debug readout** at the bottom of the screen (`CONFIG.debug.enabled`) is Session-1/3 scaffolding: state, FPS, monster telemetry, the `CROSS` stopwatch, per-building structure %/state, and the collapse-attribution list. Session 8 replaces it with the real HUD; the crossing timer can go then. It's now up to 5 lines and close to the bottom of the screen.
+- **Rooftop walking uses `walkSpeed`, climbing uses `climbSpeed`, walking off defeated uses `CONFIG.health.walkOffSpeed`** — three different speeds for three different kinds of "walking", all guesses.
+- **`getPunchBox()` and `punchTargetRect()` are different boxes on purpose.** The first is the fist the art draws; the second is what damages cells (and now, indirectly, what triggers an eat) and reaches further back. Debug draws both (yellow / red). Sessions 5, 6 and 10 need to decide which one hits humans, enemies and other monsters — probably `getPunchBox()`, since the centre-reaching trick exists only to solve a building-frontage problem.
+- **Debug readout** at the bottom of the screen (`CONFIG.debug.enabled`) is Session 1/3/4 scaffolding: small per-monster health bars, state/FPS/monster telemetry (now including energy and defeat status), the `CROSS` stopwatch, per-building structure %/state, and the collapse-attribution list. Session 8 replaces all of it with the real HUD.
 - **Jump apex is ~40 px against a 46 px monster** — under one body height. It's enough to clear every gap in the current layout. Raising `CONFIG.monster.jumpSpeed` is still the right lever if jumps feel bad, but it now has a second consequence: it raises the minimum legal building height (see the point above).
-- **`DAY_CLEAR` and `GAME_OVER` stubs have no `update`** — they're intentional dead ends until Session 9. Nothing transitions into them yet. `DAY_INTRO` passes straight through to `PLAY`. **`Game.dayCleared()` now returns a real answer** — you can flatten the city and nothing happens.
+- **`DAY_CLEAR` and `GAME_OVER` stubs have no `update`** — they're intentional dead ends until Session 9. Nothing transitions into them yet, including a fully-defeated solo player (there's no continue prompt or game-over trigger — the monster just despawns and `game.entities.ofType(Monster)` goes empty). `DAY_INTRO` passes straight through to `PLAY`. **`Game.dayCleared()` now returns a real answer** — you can flatten the city and nothing happens.
 - **`Game.collapseEvents` is never drained.** It's reset per day in `startDay()` and grows by one entry per collapse (max five a day at the moment). Session 8 should decide whether the ScoreSystem consumes it or just reads it.
 - **No spatial partitioning, no camera, no audio, no `LevelData`** — deliberately not built, since no Phase-1 mechanic needs them yet. `Game.faceTargetFor` / `roofLandingAt` / `cellTargetFor` are linear scans over five buildings; that's the whole spatial system and it's enough.
-- **The collapse sound is missing, obviously** — Session 11 owns audio. The dust puff is the only collapse feedback right now besides the shake.
-- Sessions 1 and 2 are committed; Session 3 is not committed yet.
+- **The collapse sound, eat sound, and zap sound are all missing, obviously** — Session 11 owns audio. The dust puff is the only collapse feedback right now besides the shake; pickups have no sound or animation on consume, they just vanish.
+- Sessions 1-3 are committed; Session 4's changes are not committed yet (as of this writing).

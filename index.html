@@ -46,8 +46,12 @@
      02-movement-destruction ......... Building + cell grid, damage & collapse
                                        (§3.2, §3.3)
      09-art-audio .................... DustPuff (collapse particle)
+     03-eating-health ................ Pickup (food & hazards revealed by
+                                       punching cells)                    §4.2, §4.3
      01-monsters ..................... Monster class (all three types identical)
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
+     03-eating-health ................ energy bar, applyDamage/heal, defeat &
+                                       walk-off, knock-off — inside Monster §4.1
      09-art-audio .................... placeholder rectangle art
      08-hud-ui ....................... title, character select, HUD strip
      00-core-loop .................... game state machine                §11.2
@@ -63,6 +67,11 @@
    SHAKING and then collapse to rubble with a dust puff; roof-drop collapse;
    fall damage for anyone still on the building; collapse attribution
    (`causedBy`) for the §6 2,500-point rule.
+   Session 4 scope: the health economy. A per-monster energy bar, every
+   damage source routed through Monster.applyDamage(source); defeat at zero
+   energy reverts to a human placeholder and walks off screen; Pickup
+   entities (food, bad items, live electrical, wall dynamite with its fuse,
+   photographer/bather knock-off hazards) revealed when a punch opens a cell.
    ========================================================================== */
 
 
@@ -130,12 +139,6 @@ const CONFIG = {
     punchDamage: 1,           // cell HP a connecting punch removes [INFERRED]
                               // 1 per punch against cellHp 3 = one damage
                               // state per punch. See Monster.resolvePunch.
-
-    /* -- Damage taken (03-eating-health.md §4.1) -------------------------
-       PLACEHOLDER. Session 4 builds the HealthSystem and owns the real
-       numbers; Session 3 needs one value to push through applyDamage so the
-       collapse path has somewhere to land. 13-inferred-items.md #2.       */
-    fallDamage: 30,           // §3.3 "a large chunk of damage" [INFERRED]
     walkCycleTime: 0.36,      // s per full two-step walk cycle at walkSpeed
     spawnX: 120,              // P1 spawn; later slots offset by spawnSpacing
     spawnSpacing: 60,
@@ -149,6 +152,88 @@ const CONFIG = {
     climbCycleTime: 0.5,      // s per full climb animation cycle
     grabMinOverlap: 10,       // px of body-over-face needed to grab a face
     grabLockout: 0.18,        // s after jumping off a face before it re-grabs
+  },
+
+  /* ---- Health / energy (03-eating-health.md §4.1) -----------------------
+     "Each monster has a single energy bar. Enemy attacks and hazards drain
+     it; eating refills it. When the bar empties, the monster reverts to its
+     (naked) human form and walks off the side of the screen."
+
+     Every source is routed through Monster.applyDamage(amount, source) /
+     Monster.heal(amount, source) — see those methods. `damage` below covers
+     the §4.1 sources that have no Pickup/item of their own: nothing calls
+     most of these yet, but the name and the number are ready for the
+     session that adds the thing that fires them, the same way Session 3
+     left `causedBy: null` ready for Session 6's demolition charges.
+     [INFERRED] every value here — 13-inferred-items.md #2.                 */
+  health: {
+    maxEnergy: 100,
+    walkOffSpeed: 70,        // px/s during the post-defeat walk-off
+    knockOffSpeedX: 130,     // px/s outward pop — dynamite blast / flash / splash
+    knockOffSpeedY: -230,    // px/s upward pop, same three sources
+
+    damage: {
+      fall: 30,              // §3.3 collapse fall damage — wired since Session 3
+      bullet: 10,             // Session 6 — Guardsman rifle, not called yet
+      dynamiteThrown: 20,     // Session 6 — Guardsman-thrown dynamite, not called yet
+      shell: 15,              // Session 7 — police car shell, not called yet
+      tankShell: 25,          // Session 7 — tank shell, not called yet
+      lightning: 20,          // Session 7 — lightning cloud, not called yet
+      underwaterPerSecond: 8, // Session 9 — river/pier levels, not called yet
+      monsterPunch: 8,        // Session 10 — monster-vs-monster, not called yet
+    },
+  },
+
+  /* ---- Pickups (03-eating-health.md §4.2, §4.3) -------------------------
+     Food, bad items and timed hazards revealed when a punch opens a cell to
+     HOLE. `spawnCycle` is a deterministic round-robin keyed off cell
+     position (same trick as Building.windowLit) rather than RNG, so a
+     reload reveals the same items in the same windows — every opened cell
+     gets exactly one entry. [INFERRED] both the "every window has something"
+     density and the cycle order — 13-inferred-items.md #21.
+
+     `heal` (food) and `damage` (bad/electrical/dynamite) apply the moment a
+     monster punches an already-open cell — see Monster.resolvePunch and
+     Building.pickupAt. `fuse` items (dynamite, photographer, bather) also
+     carry `fuseDamage`/`fuseKnockOff`, applied instead if nobody eats them
+     in time — see Pickup.trigger. `category: 'hazard'` items do nothing if
+     eaten first, which is the whole point of eating them fast.            */
+  pickups: {
+    spawnCycle: [
+      'TURKEY', 'POISON', 'HAMBURGER', 'CACTUS', 'MILK', 'LIT_BULB', 'FRUIT',
+      'DYNAMITE', 'TOAST', 'TV_ON', 'PHOTOGRAPHER', 'TOASTER_NO_TOAST',
+      'BATHER', 'NEON_SIGN', 'TOILET', 'EMPTY_BATHTUB',
+    ],
+    definitions: [
+      // -- Food (§4.2): heals on eating. --------------------------------
+      { id: 'TURKEY',          category: 'food', heal: 25, color: '#c9863f' },
+      { id: 'HAMBURGER',       category: 'food', heal: 20, color: '#a5652f' },
+      { id: 'MILK',            category: 'food', heal: 15, color: '#eef1f5' },
+      { id: 'FRUIT',           category: 'food', heal: 12, color: '#7fae3a' },
+      { id: 'TOAST',           category: 'food', heal: 10, color: '#d1a24a' },
+      // -- Bad items (§4.3): hurt on eating. ------------------------------
+      { id: 'POISON',          category: 'bad', damage: 30, color: '#5a2f6b' },
+      { id: 'CACTUS',          category: 'bad', damage: 12, color: '#3f7a3f' },
+      // -- Live electrical (§4.3): shock on grab. -------------------------
+      { id: 'LIT_BULB',         category: 'electrical', damage: 18, color: '#e8d97a' },
+      { id: 'TV_ON',            category: 'electrical', damage: 18, color: '#8aa0c0' },
+      { id: 'TOASTER_NO_TOAST', category: 'electrical', damage: 18, color: '#9a9a9a' },
+      { id: 'NEON_SIGN',        category: 'electrical', damage: 18, color: '#e0508a' },
+      // -- Wall dynamite (§4.3): "~2-3 seconds to leave before it blasts
+      //    you off the building; eating it just hurts you."
+      { id: 'DYNAMITE', category: 'dynamite', damage: 16, fuse: 2.5,
+        fuseDamage: 26, fuseKnockOff: true, color: '#c0392b' },
+      // -- Timed hazards (§4.3): eat them before the flash/splash, or it
+      //    knocks the monster off the building. [INFERRED] no health cost
+      //    either way, fuse timing — 13-inferred-items.md #21/#22.
+      { id: 'PHOTOGRAPHER', category: 'hazard', fuse: 2.0,
+        fuseDamage: 10, fuseKnockOff: true, color: '#2c3e50' },
+      { id: 'BATHER', category: 'hazard', fuse: 2.0,
+        fuseDamage: 10, fuseKnockOff: true, color: '#3498db' },
+      // -- Junk (§4.3): "no benefit if eaten" — no health effect either way.
+      { id: 'TOILET', category: 'neutral', color: '#dfe6ee' },
+      { id: 'EMPTY_BATHTUB', category: 'neutral', color: '#d8dee6' },
+    ],
   },
 
   /* ---- Buildings (02-movement-destruction.md §3.2) ---------------------
@@ -285,6 +370,7 @@ const CONFIG = {
     outlineColor: '#0a0d16',
     shadowColor: 'rgba(0,0,0,0.35)',
     shadowHeight: 4,
+    humanColor: '#d8b48c',    // 03-eating-health §4.1 revert-to-human placeholder
   },
 
   /* ---- Players & input (10-architecture.md §11.3) ----------------------
@@ -608,7 +694,7 @@ class Building extends Entity {
     this.cells = [];
     for (let r = 0; r < rows; r++) {
       const row = [];
-      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp });
+      for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp, pickup: null });
       this.cells.push(row);
     }
 
@@ -688,8 +774,13 @@ class Building extends Entity {
    * already-holed section returns null — §6 has no row for it.
    * [INFERRED — 13-inferred-items.md #18.] Session 8's ScoreSystem consumes
    * this; Session 3 only has to make the damage happen.
+   *
+   * `game` is optional so Session 3's call sites (and the headless tests)
+   * keep working unchanged; pass it to get item reveals on the HOLE
+   * transition (03-eating-health.md §4.2/§4.3) — see Monster.resolvePunch,
+   * which is the only real caller and always has one.
    */
-  damageCell(col, row, amount, byMonster, causeKind) {
+  damageCell(col, row, amount, byMonster, causeKind, game) {
     if (this.isRubble) return null;
     const cell = this.cellAt(col, row);
     if (!cell || cell.state === CellState.GONE) return null;
@@ -707,8 +798,45 @@ class Building extends Entity {
 
     if (cell.state === before) return null;
     if (cell.state === CellState.CRACKED) return 'partial';
-    if (cell.state === CellState.HOLE) return 'full';
-    return null;                                   // → GONE, no §6 row
+    if (cell.state === CellState.HOLE) {
+      if (game) this.spawnPickup(col, row, game);
+      return 'full';
+    }
+    // → GONE. §6 has no row for it, and anything still sitting exposed goes
+    // with the wall — this shouldn't normally happen (Monster.resolvePunch
+    // eats a pickup instead of damaging its cell further) but it's a safety
+    // net for any other future caller of damageCell.
+    if (cell.pickup) { cell.pickup.alive = false; cell.pickup = null; }
+    return null;
+  }
+
+  /** Is there an uneaten item sitting in this cell right now? */
+  pickupAt(col, row) {
+    const cell = this.cellAt(col, row);
+    return cell ? cell.pickup : null;
+  }
+
+  clearPickupCell(col, row) {
+    const cell = this.cellAt(col, row);
+    if (cell) cell.pickup = null;
+  }
+
+  /**
+   * 03-eating-health §4.2/§4.3 — a punch just opened this cell to HOLE;
+   * reveal whatever CONFIG.pickups.spawnCycle says lives there. Deterministic
+   * per position (same trick as windowLit), so a reload reveals the same
+   * items in the same windows. [INFERRED — 13-inferred-items.md #21.]
+   */
+  spawnPickup(col, row, game) {
+    const cell = this.cellAt(col, row);
+    if (!cell || cell.pickup) return;
+    const P = CONFIG.pickups;
+    const idx = (col * 7 + row * 13 + this.index * 5 + 1) % P.spawnCycle.length;
+    const def = P.definitions.find(function (d) { return d.id === P.spawnCycle[idx]; });
+    if (!def) return;
+    const pickup = new Pickup(def, this, col, row);
+    cell.pickup = pickup;
+    game.entities.add(pickup);
   }
 
   /* ---- §3.3 collapse trigger & consequences ---------------------------- */
@@ -772,7 +900,7 @@ class Building extends Entity {
       if (m.attached !== this) continue;         // airborne monsters ride it out
       m.detach(null, false);                     // → AIR, falls to the street
       m.vy = 0;
-      m.applyDamage(CONFIG.monster.fallDamage, 'FALL');
+      m.applyDamage(CONFIG.health.damage.fall, 'FALL');
     }
 
     spawnDustPuffs(game, this);
@@ -947,6 +1075,90 @@ function spawnDustPuffs(game, building) {
 
 
 /* ==========================================================================
+   03-eating-health §4.2, §4.3 — Pickup
+
+   Food, bad items, live electrical, wall dynamite and the two knock-off
+   hazards (photographer, bather) — everything a punch can reveal inside a
+   building. One class for all of them; CONFIG.pickups.definitions is the
+   only place the flavor differs (see the CONFIG block for the full list and
+   its rationale).
+
+   A Pickup is anchored to a specific building cell and lives until either
+   `consume()` (a monster punches the open cell — Monster.resolvePunch routes
+   here instead of damaging the cell further) or, for `fuse` items, `trigger()`
+   (nobody ate it in time). Both remove it from the building's cell and the
+   entity list. If the building it's attached to comes down first, it goes
+   with it — Phase 1 doesn't carry items over into rubble (§3.3 says rubble
+   "can still contain exposed food/items"; deferred, 13-inferred-items.md #21).
+   ========================================================================== */
+class Pickup extends Entity {
+  constructor(def, building, col, row) {
+    const r = building.cellRect(col, row);
+    super(r.x + r.w / 2, r.y + r.h, r.w, r.h);
+    this.def = def;
+    this.building = building;
+    this.col = col;
+    this.row = row;
+    this.fuseTimer = def.fuse || 0;
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    if (!this.building.standing) { this.despawn(); return; }
+    if (this.fuseTimer > 0) {
+      this.fuseTimer -= dt;
+      if (this.fuseTimer <= 0) { this.fuseTimer = 0; this.trigger(game); }
+    }
+  }
+
+  /**
+   * §4.3 — the fuse ran out unconsumed: the wall dynamite blasts, the
+   * photographer's camera flashes, the bather splashes. Whoever is still
+   * on this building (face or roof) takes the consequences; a monster that
+   * already climbed away is untouched — leaving in time is the point.
+   */
+  trigger(game) {
+    if (!this.alive) return;
+    const monsters = game.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m.attached !== this.building || m.defeated) continue;
+      if (this.def.fuseDamage) m.applyDamage(this.def.fuseDamage, this.def.id);
+      if (this.def.fuseKnockOff) m.knockOff();
+    }
+    this.despawn();
+  }
+
+  /** §4.2/§4.3 — punched/grabbed before any fuse ran out. */
+  consume(monster) {
+    if (!this.alive) return;
+    if (this.def.heal) monster.heal(this.def.heal, this.def.id);
+    if (this.def.damage) monster.applyDamage(this.def.damage, this.def.id);
+    this.despawn();
+  }
+
+  despawn() {
+    this.alive = false;
+    this.building.clearPickupCell(this.col, this.row);
+  }
+
+  /* ---- 09-art-audio: placeholder icon --------------------------------- */
+  draw(ctx) {
+    if (!this.alive) return;
+    const r = this.building.cellRect(this.col, this.row);
+    const size = Math.max(6, Math.round(Math.min(r.w, r.h) * 0.4));
+    const cx = Math.round(r.x + r.w / 2);
+    const cy = Math.round(r.y + r.h / 2);
+    // Warn just before a fuse item goes off.
+    const warn = this.fuseTimer > 0 && this.fuseTimer < 0.5 &&
+      Math.floor(this.fuseTimer * 10) % 2 === 0;
+    ctx.fillStyle = warn ? '#ffffff' : this.def.color;
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+  }
+}
+
+
+/* ==========================================================================
    01-monsters — Monster
    02-movement-destruction §3.1 — movement & traversal
 
@@ -979,7 +1191,12 @@ function spawnDustPuffs(game, building) {
    guard (vdir) to stop the two states flip-flopping on the boundary; see the
    comments in updateCling / updateRoof.
    ========================================================================== */
-const Stance = { GROUND: 'GROUND', AIR: 'AIR', CLING: 'CLING', ROOF: 'ROOF' };
+/* DEFEATED (03-eating-health §4.1) isn't part of the traversal graph above —
+   nothing transitions out of it. Energy hitting zero forces it from any of
+   the other four stances (see Monster.beginDefeat), and it only ever ends in
+   despawn (walked fully offscreen). Session 9's continue flow is what will
+   eventually give it an exit. */
+const Stance = { GROUND: 'GROUND', AIR: 'AIR', CLING: 'CLING', ROOF: 'ROOF', DEFEATED: 'DEFEATED' };
 
 class Monster extends Entity {
   constructor(monsterTypeId, playerIndex, x) {
@@ -1004,11 +1221,19 @@ class Monster extends Entity {
     this.grabIgnore = null;
     this.grabLockTimer = 0;
 
-    /* 03-eating-health §4.1 — Session 4 replaces this with a real energy bar.
-       Session 3 needs somewhere for fall damage to land so the §3.3 path is
-       observable and testable; see applyDamage. */
-    this.damageTaken = 0;
+    /* 03-eating-health §4.1 — the energy bar. `defeated` latches true the
+       moment it hits zero so beginDefeat() (and therefore the revert/walk-off)
+       can only ever fire once; see applyDamage. */
+    this.energy = CONFIG.health.maxEnergy;
     this.lastDamageSource = null;
+    this.lastHealSource = null;
+    this.defeated = false;
+    this.walkOffDir = 0;      // set once, in beginDefeat()
+  }
+
+  /** 0..1, for the debug bar and (Session 8) the real HUD. */
+  get energyFraction() {
+    return CONFIG.health.maxEnergy > 0 ? this.energy / CONFIG.health.maxEnergy : 0;
   }
 
   get isPunching() { return this.punchTimer > 0; }
@@ -1069,31 +1294,105 @@ class Monster extends Entity {
   }
 
   /**
-   * §3.2 — land one punch on one wall section. Works from the street and from
-   * a face; from a roof the band sits entirely above the roof line and hits
-   * nothing, which needs no special case.
+   * §3.2/§4.2/§4.3 — land one punch on one wall section. Works from the
+   * street and from a face; from a roof the band sits entirely above the
+   * roof line and hits nothing, which needs no special case.
+   *
+   * If the targeted cell is already open and has an item sitting in it, the
+   * punch eats/grabs the item instead of damaging the cell further — §4.3's
+   * "because punching is fast, a greedy player will sometimes grab the wrong
+   * thing" only makes sense if punching an open cell is the eat action.
    */
   resolvePunch(game) {
     const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
     if (!target) return;
+    const pickup = target.building.pickupAt(target.col, target.row);
+    if (pickup) { pickup.consume(this); return 'eat'; }
     // The return value is the §6 break kind ('partial' / 'full'). Nothing
     // reads it until Session 8 wires up the ScoreSystem.
     return target.building.damageCell(
-      target.col, target.row, CONFIG.monster.punchDamage, this, 'punch');
+      target.col, target.row, CONFIG.monster.punchDamage, this, 'punch', game);
   }
 
   /**
    * 03-eating-health §4.1 — the single funnel every damage source routes
-   * through. Session 4 replaces the body with real energy bookkeeping and the
-   * defeat check; the signature is the part that has to stay put. Session 3
-   * calls it from exactly one place: collapse fall damage (§3.3).
+   * through: falling, bad items, live electrical, dynamite, and (once their
+   * own sessions wire them up) bullets, shells, lightning, underwater,
+   * monster-vs-monster punches. Once `defeated` the monster is walking off
+   * and inert — further hits are dropped rather than pushing energy negative.
    */
   applyDamage(amount, source) {
-    this.damageTaken += amount;
+    if (this.defeated) return;
+    this.energy = clamp(this.energy - amount, 0, CONFIG.health.maxEnergy);
     this.lastDamageSource = source;
+    if (this.energy <= 0) this.beginDefeat();
+  }
+
+  /** 03-eating-health §4.2 — the food half of the same funnel. */
+  heal(amount, source) {
+    if (this.defeated) return;
+    this.energy = clamp(this.energy + amount, 0, CONFIG.health.maxEnergy);
+    this.lastHealSource = source;
+  }
+
+  /**
+   * §4.1: "the bar empties, the monster reverts to its (naked) human form
+   * and walks off the side of the screen." The `defeated` guard is what
+   * makes this fire exactly once, however many damage calls land at or
+   * below zero energy in the same tick or afterward.
+   *
+   * [INFERRED — 13-inferred-items.md #23] The GDD doesn't say what happens
+   * to a monster defeated mid-air or mid-building. Phase 1's simplest
+   * reading: snap straight to the street, then walk off — not a measured
+   * fact. The continue flow itself is Session 9; here the state just exists
+   * and runs to a clean despawn.
+   */
+  beginDefeat() {
+    if (this.defeated) return;
+    this.defeated = true;
+    this.attached = null;
+    this.stance = Stance.DEFEATED;
+    this.vx = 0;
+    this.vy = 0;
+    this.y = CONFIG.world.groundY;
+    this.punchTimer = 0;
+    this.walkOffDir = this.x < CONFIG.view.width / 2 ? -1 : 1;
+  }
+
+  /** §4.1 walk-off. No input is read at all — nothing can stop this short of
+   * despawning once it's fully offscreen. */
+  updateDefeated(dt) {
+    const speed = CONFIG.health.walkOffSpeed;
+    this.facing = this.walkOffDir;
+    this.vx = this.walkOffDir * speed;
+    this.x += this.vx * dt;
+    this.animState = 'walk';
+    this.walkPhase = (this.walkPhase + dt / CONFIG.monster.walkCycleTime) % 1;
+    if (this.x < -this.w || this.x > CONFIG.view.width + this.w) this.alive = false;
+  }
+
+  /**
+   * 03-eating-health §4.3 — the wall dynamite's blast, the photographer's
+   * flash and the bather's splash all "knock the monster off the building"
+   * the same way: pop it into AIR with an outward shove. Purely kinematic;
+   * callers apply their own damage separately via applyDamage (see
+   * Pickup.trigger). [INFERRED] speeds — 13-inferred-items.md #2.
+   */
+  knockOff() {
+    if (this.defeated) return;
+    const H = CONFIG.health;
+    const b = this.attached;
+    const outward = b ? (this.x < b.x ? -1 : 1) : this.facing;
+    this.detach(null, false);
+    this.vx = outward * H.knockOffSpeedX;
+    this.vy = H.knockOffSpeedY;
   }
 
   update(dt, game) {
+    // §4.1 defeat: no input, no stance handlers, no punching — just the walk
+    // off screen. Checked before anything else reads input.
+    if (this.defeated) { this.updateDefeated(dt); return; }
+
     const M = CONFIG.monster;
     const input = game.input.getPlayer(this.playerIndex);
 
@@ -1377,6 +1676,8 @@ class Monster extends Entity {
      from the same rig with a palette swap — which is what the original did
      for George and Ralph anyway (01-monsters.md §2.1).                     */
   draw(ctx, alpha) {
+    if (this.defeated) { this.drawHuman(ctx, alpha); return; }
+
     const A = CONFIG.art;
     const cx = Math.round(this.renderX(alpha));
     const feet = Math.round(this.renderY(alpha));
@@ -1455,6 +1756,28 @@ class Monster extends Entity {
     ctx.textBaseline = 'middle';
     ctx.fillText(this.type.initial, cx, bodyTop + bodyH / 2);
   }
+
+  /**
+   * §4.1 "reverts to its (naked) human form and walks off the side of the
+   * screen." Placeholder rectangle art like everything pre-Session 11 — a
+   * smaller, plain figure so a defeated monster reads as "not the monster"
+   * at a glance even without real sprites.
+   */
+  drawHuman(ctx, alpha) {
+    const A = CONFIG.art;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    const w = Math.round(this.w * 0.45);
+    const h = Math.round(this.h * 0.55);
+    const headH = Math.round(h * 0.35);
+
+    ctx.fillStyle = A.shadowColor;
+    ctx.fillRect(cx - w / 2, feet - A.shadowHeight / 2, w, A.shadowHeight);
+
+    ctx.fillStyle = A.humanColor;
+    ctx.fillRect(cx - w / 2, feet - h, w, h - headH);
+    ctx.fillRect(cx - Math.round(w * 0.35), feet - h, Math.round(w * 0.7), headH);
+  }
 }
 
 
@@ -1519,6 +1842,32 @@ function drawHudStrip(game) {
   }
 }
 
+/**
+ * 03-eating-health §4.1 debug health bars (temporary; the real per-monster
+ * bars are Session 8's HUD). One row per live monster, drawn above the rest
+ * of the debug text — loops over however many are actually in play instead
+ * of assuming one, so it doesn't need touching when Session 10 adds a second.
+ */
+function drawDebugHealthBars(game) {
+  const D = CONFIG.debug;
+  const ctx = game.ctx;
+  const barW = 60, barH = 6, gap = 8;
+  const monsters = game.entities.ofType(Monster);
+  for (let i = 0; i < monsters.length; i++) {
+    const m = monsters[i];
+    const x = D.x + i * (barW + gap);
+    const y = D.y - barH - 4;
+    const frac = clamp(m.energyFraction, 0, 1);
+    ctx.fillStyle = '#20242f';
+    ctx.fillRect(x, y, barW, barH);
+    ctx.fillStyle = frac > 0.3 ? '#5fbf6a' : '#c0392b';
+    ctx.fillRect(x, y, Math.round(barW * frac), barH);
+    ctx.strokeStyle = '#7f8ba3';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, barW - 1, barH - 1);
+  }
+}
+
 /* ---- Session 1 debug readout (temporary; the real HUD is Session 8) ---- */
 function drawDebug(game) {
   if (!CONFIG.debug.enabled) return;
@@ -1535,10 +1884,14 @@ function drawDebug(game) {
       '  vx ' + monster.vx.toFixed(0) + '  vy ' + monster.vy.toFixed(0) +
       '  ' + monster.stance + '/' + monster.animState + '  face ' + (monster.facing > 0 ? 'R' : 'L') +
       '  ON ' + (monster.attached ? 'BLDG' + monster.attached.index : '—') +
-      '  DMG ' + monster.damageTaken + (monster.lastDamageSource ? '/' + monster.lastDamageSource : '')
+      '  E ' + Math.round(monster.energy) + '/' + CONFIG.health.maxEnergy +
+      (monster.lastDamageSource ? '  DMG:' + monster.lastDamageSource : '') +
+      (monster.lastHealSource ? '  HEAL:' + monster.lastHealSource : '') +
+      (monster.defeated ? '  DEFEATED' : '')
     );
     lines.push(game.crossing.readout);
   }
+  drawDebugHealthBars(game);
   // Session 3 readout: per-building structure %, state, and who owns the
   // collapse. Goes away with the rest of the debug strip in Session 8.
   if (game.buildings.length) {
@@ -2029,7 +2382,7 @@ function boot() {
   // Debug handle — inspect state from the console, and drive headless tests.
   window.RAMPAGE = {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
-    Building, CellState, BuildingState, DustPuff, cellStateForHp,
+    Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
   };
   return game;
 }

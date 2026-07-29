@@ -164,7 +164,22 @@ const CONFIG = {
      ONE set of values for ALL THREE monsters. The 1986 original gives George,
      Lizzie and Ralph identical speed, jump, punch and health; per-monster
      stats are a Rampage: World Tour (1997) thing and are out of scope.
-     Do not add per-type stat overrides here.                               */
+     Do not add per-type stat overrides here.
+
+     SESSION 12 reviewed every movement value against the things that actually
+     depend on it, and changed none of them — the arc and the speeds are the
+     one part of the first pass that measured out right:
+       jump 270 vs gravity 900 → a 40.5 px apex over a 0.60 s airtime, which
+         carries the monster 45 px sideways. The two constraints on that are
+         that it must clear the widest gap between two buildings (26 px on
+         day 1) and must NOT reach the roof of the shortest legal building
+         (minRows × cellHeight = 66 px, 13-inferred-items.md #15). Both hold
+         with margin at both ends.
+       walk 84 → 6.0 s to cross the street; climb 60 → 3.3 s up the tallest
+         day-1 building; punch 0.20 + 0.08 → 3.6 punches/second, which is what
+         sets every "punches to bring a building down" figure below.
+     [INFERRED — #3/#11/#12/#13/#14 — but now confirmed by measurement rather
+     than left as first guesses.]                                           */
   monster: {
     width: 26,
     height: 46,
@@ -207,7 +222,22 @@ const CONFIG = {
      most of these yet, but the name and the number are ready for the
      session that adds the thing that fires them, the same way Session 3
      left `causedBy: null` ready for Session 6's demolition charges.
-     [INFERRED] every value here — 13-inferred-items.md #2.                 */
+     [INFERRED] every value here — 13-inferred-items.md #2.
+
+     SESSION 12 TUNING PASS. Every number below was a first-pass guess made
+     by whichever session first fired that source, none of them measured
+     against a real day. §4.1's brief is "tune so a day is survivable but
+     attrition is real", so they are now sized against one measured budget:
+     an unskilled player (one who walks the street punching walls, never
+     dodges, and eats only what wanders into the punch) should take roughly
+     150-300 damage across a day and heal 150-250 of it back, i.e. lose about
+     half a bar per day and be forced to eat rather than being killed outright.
+     The old values ran 300-420 damage against 60-190 healing, which killed
+     that player one to three times *every day* — punishing, not attritional.
+     The measured before/after is in docs/STATUS.md's Session 12 verification.
+     Relative sizes are what carry the design: a rifle round is a chip, a
+     tank shell is a quarter of the bar, a collapse you failed to jump clear
+     of is the single biggest hit in the game.                               */
   health: {
     maxEnergy: 100,
     walkOffSpeed: 70,        // px/s during the post-defeat walk-off
@@ -215,23 +245,42 @@ const CONFIG = {
     knockOffSpeedY: -230,    // px/s upward pop, same three sources
 
     damage: {
-      fall: 30,              // §3.3 collapse fall damage — wired since Session 3
-      bullet: 10,             // Session 6 — Guardsman rifle, wired this session
-      dynamiteThrown: 20,     // Session 6 — Guardsman-thrown dynamite, wired this session
-      bomb: 25,               // Session 6 — helicopter bombing run, wired this session
-                              // [INFERRED — new this session, 13-inferred-items.md #33]
-      shell: 15,              // Session 7 — police car shell, wired this session
-      tankShell: 25,          // Session 7 — tank shell, wired this session
-      lightning: 20,          // Session 7 — lightning cloud bolt, wired this session
-                              // [INFERRED — new this session, 13-inferred-items.md #36]
-      underwaterPerSecond: 8, // Session 9 — river/pier levels, not called yet
-      monsterPunch: 8,        // Session 10 — 07-multiplayer §8.2 "monsters can punch
-                              // each other, dealing real damage", wired this session.
-                              // At maxEnergy 100 that is ~13 connecting punches to
-                              // down a full-health rival — deliberately slower than
-                              // any military source, so griefing another player is a
-                              // real investment rather than a quick kill. [INFERRED
-                              // — §8.2 confirms "real damage", never an amount.]
+      fall: 25,              // §3.3 collapse fall damage — "a large chunk", and
+                             // still the biggest single hit any source deals
+      bullet: 5,              // Session 6 — Guardsman rifle. The chip-damage
+                              // baseline: 20 rounds to down a full bar, and the
+                              // most frequent source in the game by hit count
+      dynamiteThrown: 14,     // Session 6 — Guardsman-thrown dynamite (area)
+      bomb: 18,               // Session 6 — helicopter bombing run (area)
+                              // [INFERRED — 13-inferred-items.md #33]
+      shell: 12,              // Session 7 — police car shell: fires fast, hits
+                              // for less than the tank's
+      tankShell: 18,          // Session 7 — tank shell. §5.1's "big damage",
+                              // and it arrives with the knockback below
+      lightning: 18,          // Session 7 — lightning bolt: §5.1's "heavy
+                              // damage", and unlike every other source there is
+                              // nothing to punch back at
+                              // [INFERRED — 13-inferred-items.md #36]
+      underwaterPerSecond: 6, // Session 9 — riverway. Wading is a slow drain
+                              // you choose, not a hit: ~16s in the water to
+                              // empty a full bar, and the bridge is right there
+      monsterPunch: 6,        // Session 10 — 07-multiplayer §8.2 "monsters can punch
+                              // each other, dealing real damage". [INFERRED —
+                              // §8.2 confirms "real damage", never an amount.]
+                              // Session 12 corrected both the number and the
+                              // claim attached to it. Session 10 set 8 and
+                              // called it "slower than any military source",
+                              // which was never true: at 3.6 punches/second a
+                              // monster's fist was ~29 damage/second against a
+                              // tank's ~6, i.e. the highest-damage thing in the
+                              // game by a factor of five. At 6 it is ~17
+                              // connecting punches, ~5s of *uninterrupted*
+                              // contact — still the fastest way to down a rival
+                              // if you can hold them there, which is the point:
+                              // the cost is that you score nothing while you do
+                              // it. Measured in a 3-player run where the bots
+                              // stood in each other and mashed punch, this was
+                              // by far the largest damage source in the game.
     },
 
     /* -- 07-multiplayer §8.2 cannibalism ---------------------------------
@@ -268,9 +317,24 @@ const CONFIG = {
      Food, bad items and timed hazards revealed when a punch opens a cell to
      HOLE. `spawnCycle` is a deterministic round-robin keyed off cell
      position (same trick as Building.windowLit) rather than RNG, so a
-     reload reveals the same items in the same windows — every opened cell
-     gets exactly one entry. [INFERRED] both the "every window has something"
-     density and the cycle order — 13-inferred-items.md #21.
+     reload reveals the same items in the same windows.
+     [INFERRED] both the density and the cycle order — 13-inferred-items.md #21.
+
+     SESSION 12 TUNING PASS, two changes:
+     (a) DENSITY. Session 4 gave *every* opened cell exactly one item, and
+         #21 flagged that as a guess to retune "probably toward sparser."
+         Measured, that density made a day a conveyor belt: ~24 cells opened
+         and ~14 items force-fed per day, because punching an open cell is
+         the eat action (#24), so the player cannot decline one. The cycle
+         now carries 'NONE' entries — a cell that opens on one is just an
+         open wall section, and the next punch clears it to GONE instead of
+         eating something. Roughly a third of opened cells are now empty,
+         which is also what makes the ones that aren't worth looking at.
+     (b) VALUES. Food heals were smaller than the bad items' damage across
+         the board, so the item economy was a net drain in a game where you
+         cannot choose not to eat. Food is now worth slightly more and the
+         bad items slightly less, keeping every relative ordering intact
+         (turkey best, toast worst; poison worst, cactus mildest).
 
      `heal` (food) and `damage` (bad/electrical/dynamite) apply the moment a
      monster punches an already-open cell — see Monster.resolvePunch and
@@ -279,38 +343,45 @@ const CONFIG = {
      in time — see Pickup.trigger. `category: 'hazard'` items do nothing if
      eaten first, which is the whole point of eating them fast.            */
   pickups: {
+    /* 'NONE' = the cell opens empty. Building.spawnPickup skips it. */
     spawnCycle: [
-      'TURKEY', 'POISON', 'HAMBURGER', 'CACTUS', 'MILK', 'LIT_BULB', 'FRUIT',
-      'DYNAMITE', 'TOAST', 'TV_ON', 'PHOTOGRAPHER', 'TOASTER_NO_TOAST',
-      'BATHER', 'NEON_SIGN', 'TOILET', 'EMPTY_BATHTUB',
-      'MANHOLE_COVER', 'FLOWER_POT', 'SAFE',
+      'TURKEY', 'POISON', 'NONE', 'HAMBURGER', 'CACTUS', 'MILK', 'NONE',
+      'LIT_BULB', 'FRUIT', 'NONE', 'DYNAMITE', 'TOAST', 'NONE', 'TV_ON',
+      'PHOTOGRAPHER', 'NONE', 'TOASTER_NO_TOAST', 'BATHER', 'NONE',
+      'NEON_SIGN', 'TOILET', 'NONE', 'EMPTY_BATHTUB', 'MANHOLE_COVER',
+      'NONE', 'FLOWER_POT', 'SAFE', 'NONE',
     ],
     definitions: [
       // -- Food (§4.2): heals on eating. --------------------------------
-      { id: 'TURKEY',          category: 'food', heal: 25, color: '#c9863f' },
-      { id: 'HAMBURGER',       category: 'food', heal: 20, color: '#a5652f' },
-      { id: 'MILK',            category: 'food', heal: 15, color: '#eef1f5' },
-      { id: 'FRUIT',           category: 'food', heal: 12, color: '#7fae3a' },
-      { id: 'TOAST',           category: 'food', heal: 10, color: '#d1a24a' },
+      { id: 'TURKEY',          category: 'food', heal: 30, color: '#c9863f' },
+      { id: 'HAMBURGER',       category: 'food', heal: 24, color: '#a5652f' },
+      { id: 'MILK',            category: 'food', heal: 18, color: '#eef1f5' },
+      { id: 'FRUIT',           category: 'food', heal: 15, color: '#7fae3a' },
+      { id: 'TOAST',           category: 'food', heal: 12, color: '#d1a24a' },
       // -- Bad items (§4.3): hurt on eating. ------------------------------
-      { id: 'POISON',          category: 'bad', damage: 30, color: '#5a2f6b' },
-      { id: 'CACTUS',          category: 'bad', damage: 12, color: '#3f7a3f' },
+      // §4.3 calls poison "big health loss" — a fifth of the bar, and still
+      // twice the worst thing you can otherwise put in your mouth.
+      { id: 'POISON',          category: 'bad', damage: 20, color: '#5a2f6b' },
+      { id: 'CACTUS',          category: 'bad', damage: 10, color: '#3f7a3f' },
       // -- Live electrical (§4.3): shock on grab. -------------------------
-      { id: 'LIT_BULB',         category: 'electrical', damage: 18, color: '#e8d97a' },
-      { id: 'TV_ON',            category: 'electrical', damage: 18, color: '#8aa0c0' },
-      { id: 'TOASTER_NO_TOAST', category: 'electrical', damage: 18, color: '#9a9a9a' },
-      { id: 'NEON_SIGN',        category: 'electrical', damage: 18, color: '#e0508a' },
+      { id: 'LIT_BULB',         category: 'electrical', damage: 14, color: '#e8d97a' },
+      { id: 'TV_ON',            category: 'electrical', damage: 14, color: '#8aa0c0' },
+      { id: 'TOASTER_NO_TOAST', category: 'electrical', damage: 14, color: '#9a9a9a' },
+      { id: 'NEON_SIGN',        category: 'electrical', damage: 14, color: '#e0508a' },
       // -- Wall dynamite (§4.3): "~2-3 seconds to leave before it blasts
-      //    you off the building; eating it just hurts you."
-      { id: 'DYNAMITE', category: 'dynamite', damage: 16, fuse: 2.5,
-        fuseDamage: 26, fuseKnockOff: true, color: '#c0392b' },
+      //    you off the building; eating it just hurts you." Eating it costs
+      //    less than letting the fuse run out, which is the choice §4.3
+      //    describes; the fuse hit also knocks you off.
+      { id: 'DYNAMITE', category: 'dynamite', damage: 14, fuse: 2.5,
+        fuseDamage: 20, fuseKnockOff: true, color: '#c0392b' },
       // -- Timed hazards (§4.3): eat them before the flash/splash, or it
       //    knocks the monster off the building. [INFERRED] no health cost
-      //    either way, fuse timing — 13-inferred-items.md #21/#22.
+      //    either way, fuse timing — 13-inferred-items.md #21/#22. The cost
+      //    of missing one is mostly the fall, not the flash itself.
       { id: 'PHOTOGRAPHER', category: 'hazard', fuse: 2.0,
-        fuseDamage: 10, fuseKnockOff: true, color: '#2c3e50' },
+        fuseDamage: 8, fuseKnockOff: true, color: '#2c3e50' },
       { id: 'BATHER', category: 'hazard', fuse: 2.0,
-        fuseDamage: 10, fuseKnockOff: true, color: '#3498db' },
+        fuseDamage: 8, fuseKnockOff: true, color: '#3498db' },
       // -- Junk (§4.3): "no benefit if eaten" — no health effect either way.
       { id: 'TOILET', category: 'neutral', color: '#dfe6ee' },
       { id: 'EMPTY_BATHTUB', category: 'neutral', color: '#d8dee6' },
@@ -345,6 +416,13 @@ const CONFIG = {
                        // into the row above (CONFIG.buildings.cellHeight)
     civilianHeal: 15,          // eating any plain civilian, window or street
                               // [INFERRED — 13-inferred-items.md #28]
+                              // Session 12 reviewed and kept this: measured,
+                              // civilians are where most of a day's healing
+                              // actually comes from, and lowering the value
+                              // would make a whole person worth less than a
+                              // slice of toast (CONFIG.pickups: 12). The lever
+                              // that moved instead was their *supply* — see
+                              // street.spawnInterval below.
     holdOffsetX: 16,           // px in front of the monster while HELD
     holdOffsetY: 30,           // px above the monster's feet while HELD
     holdTimeMin: 3.0,          // s — random hold duration before the victim
@@ -366,7 +444,14 @@ const CONFIG = {
        Phase 1 spawns them already in flight, crossing the street once and
        despawning off the far edge — 13-inferred-items.md #28.            */
     street: {
-      spawnInterval: 5.0,      // s between spawn attempts
+      /* Session 12: 5.0 → 7.0. A street civilian walks into a monster that is
+         standing still punching a wall, and a punch always eats it (#27), so
+         this interval is really "free healing per minute" — at 5s it out-paced
+         the whole military roster and a day ended at full health however badly
+         it went. At 7s the bar still recovers over a day, but it trends: an
+         unskilled player's 8-day run now wanders between roughly 45% and full
+         rather than topping up every day. */
+      spawnInterval: 7.0,      // s between spawn attempts
       maxActive: 2,            // concurrent fleeing civilians
       fleeSpeed: 70,           // px/s
     },
@@ -413,22 +498,35 @@ const CONFIG = {
        [INFERRED — 13-inferred-items.md #5] The GDD is explicit that the exact
        trigger is undocumented and gives the Phase 1 model: "when total
        remaining structure drops below a threshold OR the bottom row is
-       destroyed". Both numbers below are judgement calls, not measurements.
+       destroyed".
+
+       SESSION 12 reviewed all four and changed none of them — every one was
+       measured against play instead (numbers below are the measurement, on
+       day 1's 3-wide × 7-tall building), because what they buy is three
+       genuinely different routes at three genuinely different costs, which
+       is exactly what §3.2 describes. A day of 3-6 buildings comes down in
+       25-60 seconds at these values, which is an arcade day.
 
        collapseStructureFraction 0.5 — half the building's total cell HP gone
-         brings it down. That's the "punch it apart anywhere" route: ~32
-         connecting punches on the smallest building in the day layout.
-       collapseOnBottomRowGone — the "loss of lower support" route, and
-         deliberately the faster one (~18 punches on a 3-wide building, all
-         reachable from the street). It is the same route the National Guard's
-         demolition charges at the base take in §3.2, which is why the base
-         being critical is the reading chosen here.
+         brings it down. The "punch it apart anywhere" route: 32 connecting
+         punches, measured, and the slowest of the three.
+       collapseOnBottomRowGone — the "loss of lower support" route: 18
+         connecting punches, measured, and the fastest from the street. (Note
+         it is 18 rather than the 9 a single bottom row costs, because a
+         monster punching from the street hits the *second* row up first —
+         13-inferred-items.md #17 — so this route clears two rows, not one.)
+         It is the same route the National Guard's demolition charges take in
+         §3.2, which is why the base being critical is the reading chosen here.
        roofDropStructureFraction 0.8 — §3.2 roof-drop: "weaken a building,
-         then jump onto its roof". A fresh building (1.0) is never brought
-         down by a landing; 20% of its structure gone is "weakened".
-       shakeDuration 1.2 s — the §3.3 tell. Long enough to react and jump
-         clear (a jump leaves the surface on the frame it is pressed), short
-         enough that climbing down a tall face is not an escape.            */
+         then jump onto its roof". 13 punches to weaken, then a landing —
+         cheapest in punches, but it costs a climb and a jump, and only a
+         *landing* triggers it (walking onto a roof off a face is safe), so
+         it can never fire by accident on the way up.
+       shakeDuration 1.2 s — the §3.3 tell. Measured escapable: a monster on
+         the roof that presses jump at any point in the window, including the
+         last 0.05 s of it, gets clear and takes no fall damage. Only a player
+         who doesn't react at all eats it, which is what "the shaking state is
+         the tell" should mean.                                             */
     collapseStructureFraction: 0.5,
     collapseOnBottomRowGone: true,
     roofDropStructureFraction: 0.8,
@@ -492,11 +590,20 @@ const CONFIG = {
          [INFERRED] fire cadence, dynamite mix and target range — nothing in
          §5.1 gives numbers for any of these.                              */
       window: {
-        fireInterval: 1.6,       // s between fire attempts once popped out
+        fireInterval: 2.0,       // s between fire attempts once popped out
+                                 // (Session 12: was 1.6 — see the cap on
+                                 // concurrent window Guardsmen in
+                                 // CONFIG.spawnDirector for the same reason)
         fireIntervalJitter: 0.4, // +/- s so windows don't fire in lockstep
         dynamiteChance: 0.35,    // fraction of fire attempts that throw
                                  // dynamite instead of shooting
-        targetRange: 260,       // px — won't bother firing at nothing in range
+        targetRange: 220,       // px — won't bother firing at nothing in range
+                                 // (Session 12: was 260. Same reasoning as the
+                                 // vehicle's range below — a Guardsman four
+                                 // buildings away sniping a monster it can
+                                 // never be punched by isn't a threat, it's a
+                                 // tax. This is roughly "the building you're
+                                 // on, and its neighbours".)
       },
       /* -- Street variant: runs to a building's base and plants a charge -- */
       street: {
@@ -533,18 +640,34 @@ const CONFIG = {
        roofline except during its strafing dive, and that dive line sits
        just above the *tallest* building in the current day layout so only
        a monster on that roof can reach up and punch it — "destroyed on its
-       approach" (§5.1).                                                   */
+       approach" (§5.1).
+
+       Session 12: the two altitudes below are no longer absolute constants.
+       They were hand-picked against the *one* hardcoded 9-row day Session 6
+       played on, and Session 9's LevelData made the tallest roof a per-day
+       number — on a day whose tallest building is six rows the old fixed
+       dive line sat 60 px above every roof in the city, so nothing could
+       ever reach the helicopter and §5.1's "can be destroyed on its
+       approach" was unreachable. `Sky` (below the CONFIG block) resolves
+       both against the actual skyline once per day; the values here are the
+       ceiling/clearances it works from. See 13-inferred-items.md #35.      */
     helicopter: {
       width: 34,
       height: 14,
       bodyColor: '#5a6270',
       rotorColor: '#232630',
       behaviorMode: 'AUTO',      // 'AUTO' | 'STRAFE' | 'BOMB'
-      cruiseAltitudeY: 70,       // px — well above every rooftop
+      cruiseAltitudeY: 70,       // px — the highest the cruise lane ever sits
+      cruiseClearance: 24,       // px it must stay above the tallest roof, if
+                                 // that pushes it higher than cruiseAltitudeY
       cruiseSpeed: 90,           // px/s horizontal
       rotorSpinSpeed: 6,         // 09-art-audio §10 — cosmetic rotor-blur cycles/s
       strafe: {
-        diveAltitudeY: 150,      // px — just above the tallest building's roof
+        diveAboveRoof: 16,       // px the dive line sits above the tallest
+                                 // roof — inside the punch box of a monster
+                                 // standing on it (Monster.getPunchBox)
+        minDiveDrop: 20,         // px the dive must drop below the cruise lane,
+                                 // so a very tall city still has a real dive
         diveSpeed: 70,           // px/s vertical, both down and back up
         burstCount: 5,           // rounds fired during one strafing pass
         burstInterval: 0.09,     // s between rounds in the burst
@@ -570,14 +693,30 @@ const CONFIG = {
     vehicle: {
       width: 30,
       height: 20,          // same footprint as Guardsman — proven punch-reach geometry
-      targetRange: 280,
+      /* Session 12: 280 → 200. At 280 a vehicle opened fire from more than
+         half a screen away and kept firing for its whole crossing, so its
+         cadence was really "shells per day" and the player had no window in
+         which the thing shooting at them was also reachable. At 200 the
+         shells come in a burst as it closes, and while it is shooting it is
+         close enough to punch — §5.1's own note on the tank row is "punish
+         between shots". This is the single biggest lever on how brutal a
+         late-pass day is: at the top of the difficulty ramp it took an
+         unskilled player's damage-per-day from ~950 to ~300. [INFERRED] */
+      targetRange: 200,
       lightbarFlashSpeed: 4,   // 09-art-audio §10 — police lightbar cycles/s
+      /* Session 12: both fire intervals lengthened. A vehicle drives the
+         whole street and `targetRange` (280) covers most of it, so its
+         cadence is really "shells per pass", and a tank at 2.4s was landing
+         8-10 of them — a whole energy bar from one unit the player often
+         never sees arrive. The tank is still the slow-firing heavy hitter
+         and the police car still the fast one; the ratio between them is
+         unchanged, both just fire less across a pass.                      */
       tank: {
-        speed: 26, fireInterval: 2.4, fireIntervalJitter: 0.4,
+        speed: 26, fireInterval: 3.2, fireIntervalJitter: 0.4,
         bodyColor: '#4a5c3a', turretColor: '#313f22', damageKey: 'tankShell',
       },
       police: {
-        speed: 68, fireInterval: 1.0, fireIntervalJitter: 0.2,
+        speed: 68, fireInterval: 1.3, fireIntervalJitter: 0.2,
         bodyColor: '#28407a', turretColor: '#182648', damageKey: 'shell',
       },
     },
@@ -597,7 +736,11 @@ const CONFIG = {
       helmetColor: '#232f1c',
       chuteColor: '#c9c9c9',
       dropSpeed: 55,       // px/s during the parachute descent to the roof
-      fireInterval: 0.55,  // rapid vs. a window Guardsman's 1.6s
+      fireInterval: 0.65,  // rapid: ~3x a window Guardsman's, which is the only
+                           // thing §5.1 says about it. Session 12 moved this
+                           // with the Guardsman's own interval (1.6 → 2.0) so
+                           // the documented *ratio* stays the spec, not the
+                           // absolute number that happened to satisfy it.
       fireIntervalJitter: 0.15,
     },
 
@@ -614,7 +757,9 @@ const CONFIG = {
       height: 16,
       color: '#3a3f52',
       flashColor: '#e8e0ff',
-      altitudeY: 40,        // above the helicopter's own cruise altitude (70)
+      altitudeY: 40,        // above the helicopter's own cruise lane; Sky keeps
+                            // it there even when a tall city raises that lane
+      cruiseClearance: 24,  // px it must stay above the helicopter cruise lane
       driftSpeed: 36,       // px/s horizontal
       boltInterval: 2.4,
       boltIntervalJitter: 0.6,
@@ -666,15 +811,28 @@ const CONFIG = {
      values; Game.scaledInterval/scaledMax (below CONFIG.difficulty) scale
      every one of these against the difficulty knob, so raising the scalar
      shrinks intervals and raises caps without touching these base numbers.
-     [INFERRED] every value — nothing is documented.                       */
+     [INFERRED] every value — nothing is documented.
+
+     SESSION 12 TUNING PASS. The street-Guardsman cadence is the one that
+     moved a long way, and for a reason worth recording: a demolition charge
+     clears a building's entire bottom row and therefore always collapses it
+     (see CONFIG.enemies.demolitionCharge), so at the old 9-second roll the
+     Guard levelled *more of the city than the player did* — measured at 3
+     of 5 buildings on day 1, and a day would clear itself in under a minute
+     with the player standing still. §3.2 confirms charges can bring a
+     building down; it doesn't make them the demolition crew. At 20 seconds
+     a charge is one dramatic event a day at the opening difficulty (and the
+     player still has plantTime + fuse ≈ 5s to punch the sapper down), while
+     the punch route stays what actually clears the board.                  */
   spawnDirector: {
-    guardsmanWindowInterval: 4.0,   // s between window-Guardsman spawn rolls
-    maxWindowGuardsmen: 3,          // concurrent
-    guardsmanStreetInterval: 9.0,   // s between street-Guardsman spawn rolls
+    guardsmanWindowInterval: 5.0,   // s between window-Guardsman spawn rolls
+    maxWindowGuardsmen: 2,          // concurrent — 3 rifles on one wall was the
+                                    // single biggest damage source in the game
+    guardsmanStreetInterval: 20.0,  // s between street-Guardsman spawn rolls
     maxStreetGuardsmen: 1,          // concurrent
     helicopterInterval: 14.0,       // s between helicopter spawn rolls
     maxHelicopters: 1,              // concurrent
-    vehicleInterval: 11.0,          // s between tank/police spawn rolls — new Session 7
+    vehicleInterval: 13.0,          // s between tank/police spawn rolls — new Session 7
     maxVehicles: 1,                 // concurrent
     paratrooperInterval: 16.0,      // s between paratrooper spawn rolls — new Session 7
     maxParatroopers: 1,             // concurrent
@@ -720,18 +878,33 @@ const CONFIG = {
      [INFERRED — 13-inferred-items.md #36/#43: the GDD confirms each axis's
      direction, never a rate. On day 1 of pass 1 with the manual offset at 0
      every formula below is still the identity, i.e. Session 6's original
-     flat cadence — the ramp only bites as the day index climbs.]         */
+     flat cadence — the ramp only bites as the day index climbs.]
+
+     SESSION 12 TUNING PASS. The ramp's *rates* are gentler and, more
+     importantly, they are now bounded. Nothing capped either formula, so
+     the scalar's top end (day 128 of the sixth pass: 7.62 + 10 = 17.62)
+     shrank every cadence to 27% of base and raised every concurrent cap by
+     +8 — measured at day 300, that is 43 police shells in a single day and
+     an unskilled player defeated 5-8 times per day, with the Guard's own
+     charges levelling most of the board. §5.2 and §7.2 confirm the
+     *direction* of every axis and no rate at all, and 768 days of monotonic
+     unbounded growth is not a reading of "later loops escalate" — it's an
+     unplayable tail. `minCadenceFactor`/`maxUnitBonus` are the ceiling: the
+     hardest day in the game fields roughly half the base cadence and two
+     more of every unit than day 1, which the scalar reaches around the
+     fourth pass and holds.                                                */
   difficulty: {
     scalar: 0,                // manual debug OFFSET added on top of the
                               // day-derived scalar; 0 = pure day-driven
     dayScalarStep: 0.06,      // scalar points added per day within a pass —
                               // day 1 → 0.00, day 50 → 2.94, day 128 → 7.62
     passScalarStep: 2,        // §7.2 "later passes escalate": +2 scalar per
-                              // completed 128-day pass, which is +1 to every
-                              // concurrent-unit cap (incl. lightning) and
-                              // +0.16 police share, per pass
-    cadenceScale: 0.15,       // fractional cadence shrink per scalar point
-    maxUnitGrowth: 0.5,       // +1 concurrent-unit cap per 2 scalar points
+                              // completed 128-day pass
+    cadenceScale: 0.10,       // fractional cadence shrink per scalar point
+    minCadenceFactor: 0.5,    // floor on that shrink — no cadence ever runs
+                              // faster than twice its base rate
+    maxUnitGrowth: 0.34,      // +1 concurrent-unit cap per 3 scalar points
+    maxUnitBonus: 2,          // ceiling on that growth, per unit category
     policeShareBase: 0.25,    // fraction of ground-vehicle spawns that are
                               // police at scalar 0
     policeShareGrowth: 0.08,  // + per scalar point, clamped to 1
@@ -1499,6 +1672,49 @@ const SFX = new AudioManager();
 
 
 /* ==========================================================================
+   04-military-hazards §5.1 — Sky (the day's air lanes) — new in Session 12
+
+   Helicopters, paratroopers and lightning clouds all fly at fixed heights,
+   and every one of those heights only means anything *relative to the
+   skyline*: the cruise lane has to clear the tallest roof, and §5.1's
+   helicopter "can be destroyed on its approach" is only true if its strafing
+   dive comes down to a roof a monster can actually be standing on.
+
+   Sessions 6/7 hardcoded both as absolute y values, hand-picked against the
+   single 9-row day that existed at the time. Session 9 made the skyline a
+   per-day number, which quietly broke the dive: on a city whose tallest
+   building is 5-6 rows, the fixed dive line sat 60+ px above every roof and
+   the helicopter could never be punched down at all. `resolveFor` recomputes
+   both from the day's own buildings, once, in Game.startDay.
+
+   A module-level singleton for the same reason SFX is one: the three flying
+   classes read these from constructors and update loops that have no `game`
+   reference to thread a value through. [INFERRED — 13-inferred-items.md #35.]
+   ========================================================================== */
+const Sky = {
+  cruiseY: CONFIG.enemies.helicopter.cruiseAltitudeY,
+  diveY: CONFIG.enemies.helicopter.cruiseAltitudeY +
+         CONFIG.enemies.helicopter.strafe.minDiveDrop,
+  cloudY: CONFIG.enemies.lightningCloud.altitudeY,
+
+  /** Called once per day, after the buildings are laid out. */
+  resolveFor(buildings) {
+    const H = CONFIG.enemies.helicopter;
+    const L = CONFIG.enemies.lightningCloud;
+    let tallestRoofY = CONFIG.world.groundY;
+    for (const b of buildings) tallestRoofY = Math.min(tallestRoofY, b.roofY);
+
+    // Smaller y is higher on screen: the cruise lane is the *lower* of the
+    // configured ceiling and "clear of the tallest roof".
+    this.cruiseY = Math.min(H.cruiseAltitudeY, tallestRoofY - H.cruiseClearance);
+    this.diveY = Math.max(tallestRoofY - H.strafe.diveAboveRoof,
+                          this.cruiseY + H.strafe.minDiveDrop);
+    this.cloudY = Math.min(L.altitudeY, this.cruiseY - L.cruiseClearance);
+  },
+};
+
+
+/* ==========================================================================
    10-architecture §11.3 — Entity base class
 
    Position anchor: x = horizontal centre, y = feet (bottom edge). That makes
@@ -1911,12 +2127,19 @@ class Building extends Entity {
    * reveal whatever CONFIG.pickups.spawnCycle says lives there. Deterministic
    * per position (same trick as windowLit), so a reload reveals the same
    * items in the same windows. [INFERRED — 13-inferred-items.md #21.]
+   *
+   * Session 12: a 'NONE' entry in the cycle means the cell opens empty —
+   * the sparser density #21 asked this session to tune toward. It falls out
+   * of the lookup below (no definition has that id) but is checked for
+   * explicitly, because "no item here" is a deliberate cycle entry rather
+   * than a typo in the data.
    */
   spawnPickup(col, row, game) {
     const cell = this.cellAt(col, row);
     if (!cell || cell.pickup) return;
     const P = CONFIG.pickups;
     const idx = (col * 7 + row * 13 + this.index * 5 + 1) % P.spawnCycle.length;
+    if (P.spawnCycle[idx] === 'NONE') return;
     const def = P.definitions.find(function (d) { return d.id === P.spawnCycle[idx]; });
     if (!def) return;
     const pickup = new Pickup(def, this, col, row);
@@ -2860,8 +3083,8 @@ class Guardsman extends Enemy {
    Destruction is a single connecting punch — same `consume(monster)` shape
    every other punch target in this file uses — via `Game.enemyTargetFor`,
    which only ever finds it geometrically reachable during STRAFING, when it
-   dips to `diveAltitudeY` (picked to sit just above the tallest building in
-   the day layout — see the CONFIG comment). [INFERRED throughout —
+   dips to `Sky.diveY` (resolved per day to sit just at the tallest
+   building's roof — see the Sky singleton). [INFERRED throughout —
    13-inferred-items.md #35.]
    ========================================================================== */
 class Helicopter extends Enemy {
@@ -2880,7 +3103,7 @@ class Helicopter extends Enemy {
   static spawn(fromLeft, mode) {
     const H = CONFIG.enemies.helicopter;
     const x = fromLeft ? CONFIG.world.leftBound - 20 : CONFIG.world.rightBound + 20;
-    return new Helicopter(x, H.cruiseAltitudeY, fromLeft ? 1 : -1, mode);
+    return new Helicopter(x, Sky.cruiseY, fromLeft ? 1 : -1, mode);
   }
 
   update(dt, game) {
@@ -2915,8 +3138,8 @@ class Helicopter extends Enemy {
         break;
       case 'DIVE_DOWN':
         this.y += S.diveSpeed * dt;
-        if (this.y >= S.diveAltitudeY) {
-          this.y = S.diveAltitudeY;
+        if (this.y >= Sky.diveY) {
+          this.y = Sky.diveY;
           this.behavior = 'STRAFING';
           this.burstsFired = 0;
           this.burstTimer = 0;
@@ -2935,7 +3158,7 @@ class Helicopter extends Enemy {
       case 'DIVE_UP':
         this.y -= S.diveSpeed * dt;
         this.x += this.dir * H.cruiseSpeed * dt;
-        if (this.y <= H.cruiseAltitudeY) { this.y = H.cruiseAltitudeY; this.behavior = 'EXIT'; }
+        if (this.y <= Sky.cruiseY) { this.y = Sky.cruiseY; this.behavior = 'EXIT'; }
         break;
       case 'EXIT':
         this.x += this.dir * H.cruiseSpeed * dt;
@@ -3112,7 +3335,7 @@ class Vehicle extends Enemy {
 class Paratrooper extends Enemy {
   constructor(building) {
     const P = CONFIG.enemies.paratrooper;
-    super(building.x, CONFIG.enemies.helicopter.cruiseAltitudeY, P.width, P.height, 'PARATROOPER');
+    super(building.x, Sky.cruiseY, P.width, P.height, 'PARATROOPER');
     this.building = building;
     this.behavior = 'DROPPING';
     this.fireTimer = P.fireInterval;
@@ -3202,7 +3425,7 @@ class Paratrooper extends Enemy {
 class LightningCloud extends Enemy {
   constructor(x, dir) {
     const L = CONFIG.enemies.lightningCloud;
-    super(x, L.altitudeY, L.width, L.height, 'LIGHTNING_CLOUD');
+    super(x, Sky.cloudY, L.width, L.height, 'LIGHTNING_CLOUD');
     this.dir = dir;
     this.behavior = 'DRIFT';
     this.boltTimer = L.boltInterval;
@@ -5781,6 +6004,10 @@ class Game {
     this.scoreSeed = 0;            // §6 — only the range-pick sequence resets; player.score does not
     for (const p of this.players) { p.awaitingContinue = false; p.continueTimer = 0; }
     this.spawnBuildings();
+    /* 04-military-hazards §5.1 — the day's air lanes depend on the day's own
+       skyline, so this has to run after the buildings exist and before any
+       flying enemy spawns. See the Sky singleton. */
+    Sky.resolveFor(this.buildings);
     this.spawnMonsters();
   }
 
@@ -6038,11 +6265,15 @@ class Game {
    * direction, never a rate.]
    */
   scaledInterval(base) {
-    return base / (1 + this.difficultyScalar() * CONFIG.difficulty.cadenceScale);
+    const D = CONFIG.difficulty;
+    const factor = 1 / (1 + this.difficultyScalar() * D.cadenceScale);
+    return base * Math.max(factor, D.minCadenceFactor);
   }
 
   scaledMax(base) {
-    return base + Math.floor(this.difficultyScalar() * CONFIG.difficulty.maxUnitGrowth);
+    const D = CONFIG.difficulty;
+    return base + Math.min(Math.floor(this.difficultyScalar() * D.maxUnitGrowth),
+                           D.maxUnitBonus);
   }
 
   /** §5.2 axis 2/5: "more and faster ground units ... more police [on later
@@ -6823,6 +7054,7 @@ function boot() {
     Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
     Vehicle, Paratrooper, LightningCloud, ScoreSystem, LevelData, Train, Boater,
     AudioManager, SFX,   // 09-art-audio §10 — new in Session 11
+    Sky,                 // 04-military-hazards §5.1 — new in Session 12
     jumpToDay: function (n) { return game.jumpToDay(n); },
   };
   return game;

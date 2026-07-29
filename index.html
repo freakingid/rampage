@@ -463,6 +463,8 @@ const CONFIG = {
     litWindowEvery: 5,        // 1-in-N cells show a lit window (deterministic)
     crackColor: '#20242f',
     holeColor: '#0b0e16',
+    debrisColor: '#161a24',   // 09-art-audio §10 — HOLE-cell rubble bits and
+    scorchColor: '#211c1e',   // rubble-mound scorch flecks, new in Session 11
     palettes: [
       { wall: '#5a4a44', wallShade: '#483a35', roof: '#6d5b52', windowLit: '#e8c452', windowDark: '#2a2530' },
       { wall: '#44525a', wallShade: '#35414a', roof: '#566670', windowLit: '#d8e08a', windowDark: '#232b33' },
@@ -540,6 +542,7 @@ const CONFIG = {
       behaviorMode: 'AUTO',      // 'AUTO' | 'STRAFE' | 'BOMB'
       cruiseAltitudeY: 70,       // px — well above every rooftop
       cruiseSpeed: 90,           // px/s horizontal
+      rotorSpinSpeed: 6,         // 09-art-audio §10 — cosmetic rotor-blur cycles/s
       strafe: {
         diveAltitudeY: 150,      // px — just above the tallest building's roof
         diveSpeed: 70,           // px/s vertical, both down and back up
@@ -568,6 +571,7 @@ const CONFIG = {
       width: 30,
       height: 20,          // same footprint as Guardsman — proven punch-reach geometry
       targetRange: 280,
+      lightbarFlashSpeed: 4,   // 09-art-audio §10 — police lightbar cycles/s
       tank: {
         speed: 26, fireInterval: 2.4, fireIntervalJitter: 0.4,
         bodyColor: '#4a5c3a', turretColor: '#313f22', damageKey: 'tankShell',
@@ -1039,7 +1043,17 @@ const CONFIG = {
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
      Type data only: sprite/palette, punch-animation flavor, designated-victim
      id. NO stats. Colors are [INFERRED] (13-inferred-items.md #6) — sources
-     conflict on the arcade palettes, so these are distinct placeholders.     */
+     conflict on the arcade palettes, so these are distinct placeholders.
+
+     `rig` — new in Session 11 (09-art-audio §10: "George and Ralph can share
+     a body rig with a head/palette swap; Lizzie is the distinct one"
+     [FAITHFUL]). 'SHARED' draws the ape/wolf body (Monster.drawSharedRig);
+     'LIZARD' draws Lizzie's own silhouette (Monster.drawLizardRig — snout,
+     back spikes, tail). `earStyle` only matters for the SHARED rig, and is
+     the head-swap half of "shared rig, head swap": George gets rounded ape
+     ears + a brow ridge, Ralph gets pointed wolf ears + a snout. Exact
+     silhouettes are [INFERRED] — 13-inferred-items.md #50, same status as
+     the palettes above.                                                    */
   monsterTypes: {
     GEORGE: {
       id: 'GEORGE', name: 'GEORGE', initial: 'G',
@@ -1047,6 +1061,7 @@ const CONFIG = {
       bodyColor: '#8d5a3b', headColor: '#a06a46', trimColor: '#5c3823',
       punchFlavor: 'SWINGS FISTS',
       designatedVictim: 'WOMAN',            // §2.3 — used from Session 5
+      rig: 'SHARED', earStyle: 'ROUND',
     },
     LIZZIE: {
       id: 'LIZZIE', name: 'LIZZIE', initial: 'L',
@@ -1054,6 +1069,7 @@ const CONFIG = {
       bodyColor: '#3f8f52', headColor: '#4fa862', trimColor: '#275c34',
       punchFlavor: 'SNAPS JAWS',
       designatedVictim: 'MIDDLE_AGED_MAN',
+      rig: 'LIZARD',
     },
     RALPH: {
       id: 'RALPH', name: 'RALPH', initial: 'R',
@@ -1061,12 +1077,16 @@ const CONFIG = {
       bodyColor: '#8c8f9c', headColor: '#a3a7b5', trimColor: '#5f626d',
       punchFlavor: 'SWIPES PAWS',
       designatedVictim: 'BUSINESSMAN',
+      rig: 'SHARED', earStyle: 'POINTED',
     },
   },
 
-  /* ---- Placeholder art proportions (09-art-audio.md) -------------------
-     Rectangle stand-ins until the Session 11 art pass. Fractions are of the
-     monster's own box so all three types stay the same size.               */
+  /* ---- Art proportions (09-art-audio.md §10) ----------------------------
+     Session 1-10 drew flat rectangles; Session 11 is the sprite/animation
+     pass the GDD calls for, still 100% procedural canvas drawing (no image
+     assets — "keep everything procedural or inline" per the session brief).
+     Fractions are of the monster's own box so all three types stay the same
+     size (§2.1 mechanical parity — art differs, dimensions never do).      */
   art: {
     headHeightFrac: 0.30,
     headWidthFrac: 0.78,
@@ -1089,6 +1109,45 @@ const CONFIG = {
        box it inherited.                                                    */
     humanFormWidthFrac: 0.45,
     humanFormHeightFrac: 0.55,
+
+    /* -- Session 11 rig details, all [INFERRED — 13-inferred-items.md #50]:
+       no source describes exact monster silhouettes, only the head-swap/
+       shared-palette convention (§2.1) and "Lizzie is the distinct one". -- */
+    earSize: 5,                // George/Ralph ear triangle, px
+    browHeight: 3,              // George's brow-ridge stripe
+    snoutWidthFrac: 0.34,        // Ralph's wolf snout, fraction of head width
+    snoutHeightFrac: 0.22,
+    lizardSnoutLengthFrac: 0.55, // Lizzie's forward-projecting jaw, fraction of head width
+    lizardSpikeCount: 3,
+    lizardSpikeHeight: 5,
+    lizardTailLengthFrac: 0.6,   // fraction of body width
+    lizardTailSwayPx: 6,
+    holdArmThicknessFrac: 0.16,
+    eatDuration: 0.35,           // s the mouth-open "eat" overlay holds
+    hitReactDuration: 0.18,      // s the damage flash/flinch holds
+    hitReactFlashColor: '#ffffff',
+    hitReactShiftPx: 2,          // px the body jolts opposite its facing
+  },
+
+  /* ---- Audio (09-art-audio.md §10) — new in Session 11 -----------------
+     "Audio (keep minimal in Phase 1): monster roars, punch/impact,
+     building-collapse rumble, explosion, eat/heal blip, damage/shock zap,
+     and a short day-clear sting. Placeholder or lightweight synthesized SFX
+     are fine for Phase 1." All seven are synthesized with WebAudio
+     (AudioManager, below the Projectile section) — no external asset files,
+     per the session brief. Which game event fires which of the seven is
+     nowhere in the GDD (it names the SFX list, not their triggers), so the
+     whole mapping is [INFERRED — 13-inferred-items.md #51]. Volumes are
+     tunable per-sound so the mix can be balanced without touching the
+     synthesis code.                                                        */
+  audio: {
+    enabled: true,
+    masterVolume: 0.5,
+    muteKey: 'KeyM',
+    volumes: {
+      roar: 0.8, punch: 0.6, collapse: 0.7, explosion: 0.8,
+      eat: 0.5, zap: 0.6, dayClearSting: 0.7,
+    },
   },
 
   /* ---- Players & input (10-architecture.md §11.3, 07-multiplayer §8) ---
@@ -1159,6 +1218,24 @@ const CONFIG = {
     hudBarBgColor: '#20242f',
     hudBarColor: '#5fbf6a',
     hudBarLowColor: '#c0392b',
+    hudBarSegments: 10,        // 09-art-audio §10 — chunky segment dividers,
+                               // arcade-bar read rather than a smooth gradient
+    hudBarSegColor: 'rgba(10,13,22,0.55)',
+    hudBarLowFlashPeriod: 0.4, // s — how fast a critical bar flashes
+    // 09-art-audio §10 — arcade-styled HUD panel behind each joined column,
+    // new in Session 11. [INFERRED — exact arcade HUD chrome isn't sourced;
+    // 08-hud-ui.md §13 already flags the whole HUD look as inferred.]
+    hudPanelWidth: 150,
+    hudPanelHeight: 30,
+    hudPanelColor: 'rgba(10,13,22,0.55)',
+    hudPanelBorderWidth: 1,
+    // Title-screen marquee bulb row (purely decorative).
+    marqueeBulbCount: 12,
+    marqueeBulbSize: 3,
+    marqueeBulbGap: 8,
+    marqueeY: 20,
+    marqueeOnColor: '#e8c452',
+    marqueeOffColor: '#4a4230',
     // Day interstitial + continue prompt + mega-vitamin flourish (§9's
     // remaining UI states, all new in Session 9).
     paperColor: '#d8d3c4',
@@ -1250,6 +1327,175 @@ const CONFIG = {
    ========================================================================== */
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 function lerp(a, b, t) { return a + (b - a) * t; }
+
+/** A filled triangle, apex-and-base rather than three points — the shape
+ * every pointed-accent glyph in this file wants (monster ears/spikes/tail,
+ * pickup/enemy icon details). `dir` is which way the apex points. */
+function fillTriangle(ctx, apexX, apexY, baseWidth, height, dir) {
+  ctx.beginPath();
+  if (dir === 'up') {
+    ctx.moveTo(apexX, apexY - height);
+    ctx.lineTo(apexX - baseWidth / 2, apexY);
+    ctx.lineTo(apexX + baseWidth / 2, apexY);
+  } else if (dir === 'down') {
+    ctx.moveTo(apexX, apexY + height);
+    ctx.lineTo(apexX - baseWidth / 2, apexY);
+    ctx.lineTo(apexX + baseWidth / 2, apexY);
+  } else if (dir === 'left') {
+    ctx.moveTo(apexX - height, apexY);
+    ctx.lineTo(apexX, apexY - baseWidth / 2);
+    ctx.lineTo(apexX, apexY + baseWidth / 2);
+  } else {
+    ctx.moveTo(apexX + height, apexY);
+    ctx.lineTo(apexX, apexY - baseWidth / 2);
+    ctx.lineTo(apexX, apexY + baseWidth / 2);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+
+/* ==========================================================================
+   09-art-audio §10 — AudioManager
+
+   "Audio (keep minimal in Phase 1): monster roars, punch/impact, building-
+   collapse rumble, explosion, eat/heal blip, damage/shock zap, and a short
+   day-clear sting ... Synthesized via WebAudio is fine — no external asset
+   files." All seven SFX are built from plain oscillator/noise nodes below;
+   nothing here loads a sound file.
+
+   `SFX` is a module-level singleton rather than a `Game` field. Nearly every
+   class in this file needs to fire a sound from deep inside a method that
+   has no `game` reference to thread one through (Pickup.consume, Human.
+   consume, Building.collapse, every Enemy subclass's consume, Projectile.
+   explode) — the same reason CONFIG itself is a bare global rather than
+   something threaded everywhere. One AudioContext for the page, created (and
+   resumed) on the first real keydown — see InputManager.attach — never at
+   page load, since browsers gate audio behind a user gesture and the game
+   loop itself never runs from inside one.
+
+   [INFERRED — 13-inferred-items.md #51] The GDD names the seven SFX and
+   nothing about *when* each one fires; every trigger below (Monster.update,
+   Building.collapse, Pickup.consume/trigger, Human.consume, every Enemy's
+   consume, Projectile.explode/updateCharge, GameState.DAY_CLEAR) is this
+   session's own reading, documented at each call site.
+   ========================================================================== */
+class AudioManager {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.muted = false;
+  }
+
+  /** Created and resumed on the first real keydown. Safe to call repeatedly —
+   * every later keydown just re-resumes a context a tab-switch may have
+   * suspended. */
+  unlock() {
+    if (!CONFIG.audio.enabled) return;
+    if (!this.ctx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;                    // no WebAudio support — SFX stays silent
+      this.ctx = new Ctx();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = CONFIG.audio.masterVolume;
+      this.master.connect(this.ctx.destination);
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
+
+  toggleMute() { this.muted = !this.muted; }
+
+  /** Fire-and-forget: every call site plays a sound without checking
+   * readiness itself. Silently a no-op before unlock(), while muted, with
+   * `CONFIG.audio.enabled` false, or (headless tests) with no WebAudio at
+   * all — none of those are errors worth guarding at 30+ call sites. */
+  play(name) {
+    if (!CONFIG.audio.enabled || this.muted || !this.ctx) return;
+    const vol = (CONFIG.audio.volumes[name] || 0.5) * CONFIG.audio.masterVolume;
+    switch (name) {
+      case 'roar': this.roar(vol); break;
+      case 'punch': this.punch(vol); break;
+      case 'collapse': this.collapse(vol); break;
+      case 'explosion': this.explosion(vol); break;
+      case 'eat': this.eat(vol); break;
+      case 'zap': this.zap(vol); break;
+      case 'dayClearSting': this.dayClearSting(vol); break;
+    }
+  }
+
+  /* ---- building blocks: every SFX below is one or two of these ---------- */
+
+  /** A tone with a linear frequency sweep and an exponential decay. */
+  tone(freqFrom, freqTo, duration, gainPeak, type, startAt) {
+    const ctx = this.ctx, t0 = startAt || ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(Math.max(1, freqFrom), t0);
+    osc.frequency.linearRampToValueAtTime(Math.max(1, freqTo), t0 + duration);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gainPeak, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+    osc.connect(g).connect(this.master);
+    osc.start(t0);
+    osc.stop(t0 + duration + 0.02);
+  }
+
+  /** Filtered white noise — the shared basis for punch/collapse/explosion. */
+  noise(duration, gainPeak, filterFreq) {
+    const ctx = this.ctx, t0 = ctx.currentTime;
+    const buffer = ctx.createBuffer(1, Math.max(1, Math.ceil(ctx.sampleRate * duration)), ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = filterFreq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gainPeak, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+    src.connect(filter).connect(g).connect(this.master);
+    src.start(t0);
+    src.stop(t0 + duration);
+  }
+
+  /* ---- the seven SFX (CONFIG.audio.volumes names each) ------------------ */
+
+  roar(vol) {
+    this.tone(160, 70, 0.45, vol, 'sawtooth');
+    this.noise(0.3, vol * 0.3, 500);
+  }
+  punch(vol) {
+    this.noise(0.08, vol, 1800);
+    this.tone(160, 60, 0.09, vol * 0.8, 'square');
+  }
+  collapse(vol) {
+    this.noise(0.7, vol, 350);
+    this.tone(90, 40, 0.6, vol * 0.6, 'sine');
+  }
+  explosion(vol) {
+    this.noise(0.5, vol, 900);
+    this.tone(120, 30, 0.5, vol * 0.8, 'sawtooth');
+  }
+  eat(vol) {
+    this.tone(380, 700, 0.12, vol, 'triangle');
+  }
+  zap(vol) {
+    this.tone(900, 140, 0.16, vol, 'square');
+  }
+  /** Short major-key fanfare — 06-levels-progression §7.1's day-clear
+   * interstitial. Four notes scheduled up front rather than one-per-tick, so
+   * it plays cleanly even if the interstitial's own frame rate stutters. */
+  dayClearSting(vol) {
+    const notes = [392.00, 523.25, 659.25, 783.99]; // G4 C5 E5 G5
+    const start = this.ctx.currentTime;
+    for (let i = 0; i < notes.length; i++) {
+      this.tone(notes[i], notes[i], 0.2, vol, 'square', start + i * 0.11);
+    }
+  }
+}
+
+const SFX = new AudioManager();
 
 
 /* ==========================================================================
@@ -1361,6 +1607,7 @@ class InputManager {
   attach(target) {
     const self = this;
     target.addEventListener('keydown', function (e) {
+      SFX.unlock();      // 09-art-audio §10 — the page's first real user gesture
       if (self.watched[e.code]) e.preventDefault();
       if (e.repeat) return;                 // auto-repeat must not re-trigger edges
       self.held[e.code] = true;
@@ -1759,6 +2006,11 @@ class Building extends Entity {
     if (this.isRubble) return;
     this.structureState = BuildingState.RUBBLE;
     this.shakeTimer = 0;
+    // 09-art-audio §10 — the collapse rumble plays for every collapse,
+    // player-caused or not; the roar is the punching monster's, so it's
+    // silent for a third-party (demolition charge/bomb) collapse.
+    SFX.play('collapse');
+    if (this.causedBy) SFX.play('roar');
 
     const monsters = game.entities.ofType(Monster);
     for (let i = 0; i < monsters.length; i++) {
@@ -1843,6 +2095,16 @@ class Building extends Entity {
       ctx.fillRect(x, y, w, h);
       ctx.fillStyle = B.holeColor;
       ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+      // 09-art-audio §10 — a ragged edge and a couple of debris chips, so a
+      // punched-through wall reads as a hole torn in it rather than a flat
+      // dark rectangle. Deterministic per cell (same no-RNG convention as
+      // windowLit) so a reload tears the same holes.
+      const jag = (col * 7 + row * 3 + this.index) % 3;
+      ctx.fillStyle = p.wallShade;
+      ctx.fillRect(x + 2, y + 2, w - 4, 1 + jag);
+      ctx.fillStyle = B.debrisColor;
+      ctx.fillRect(x + 4 + jag, y + h - 6, 3, 3);
+      ctx.fillRect(x + w - 8, y + h - 5 - jag, 3, 2);
       return;
     }
 
@@ -1857,9 +2119,14 @@ class Building extends Entity {
       w - B.windowInsetX * 2, h - B.windowInsetY * 2);
 
     if (cell.state === CellState.CRACKED) {
+      // Two hairline cracks plus a corner chip — a bit more "cracked glass"
+      // than a single straight line reads as.
+      const jog = (col + row) % 2 === 0 ? 1 : -1;
       ctx.fillStyle = B.crackColor;
       ctx.fillRect(x + 3, y + 3, 2, h - 6);
       ctx.fillRect(x + 3, y + Math.round(h / 2), w - 8, 2);
+      ctx.fillRect(x + w - 6 - jog, y + 3, 2, Math.round(h / 3));
+      ctx.fillRect(x + 3, y + 3, 3, 2);
     }
   }
 
@@ -1889,6 +2156,20 @@ class Building extends Entity {
     for (let c = 0; c < this.cols; c += 2) {
       const slabW = Math.round(B.cellWidth / 2);
       ctx.fillRect(left + c * B.cellWidth + 3, base - B.rubbleHeight + 2, slabW, 3);
+    }
+
+    // 09-art-audio §10 — scorch flecks and loose debris scattered across the
+    // mound, new in Session 11. Same fixed-pattern convention as the bumps
+    // above, keyed off building index + cell so every reload draws the
+    // identical mound.
+    ctx.fillStyle = B.scorchColor;
+    for (let c = 0; c < this.cols; c++) {
+      if ((c * 11 + this.index * 7) % 4 !== 0) continue;
+      ctx.fillRect(left + c * B.cellWidth + 5, base - 3, 2, 2);
+    }
+    ctx.fillStyle = B.debrisColor;
+    for (let c = 1; c < this.cols; c += 2) {
+      ctx.fillRect(left + c * B.cellWidth - 2, base - B.rubbleHeight + 4, 3, 2);
     }
   }
 }
@@ -1963,6 +2244,102 @@ function spawnDustPuffs(game, building) {
    with it — Phase 1 doesn't carry items over into rubble (§3.3 says rubble
    "can still contain exposed food/items"; deferred, 13-inferred-items.md #21).
    ========================================================================== */
+
+/**
+ * 09-art-audio §10 — one small readable icon per pickup category, in place
+ * of the flat color square Sessions 4-7 drew. `def.color` still does most of
+ * the identification work (unchanged from before this session); the shape
+ * on top is what makes a category readable at a glance without checking the
+ * color legend. Electrical items pulse — the "on" (live/dangerous) half of
+ * §10's "on/off variants for electrical items so the hazard read is
+ * instant." The "off" (safe-to-grab) variant is a different, unbuilt Pickup
+ * category (13-inferred-items.md #42) — Phase 1 has nothing to draw an off
+ * state *for* yet, so only the live read is new here. `age` is a per-entity
+ * cosmetic clock (Pickup.age/Projectile — seconds since spawn), not a game
+ * clock, so the glow phase stays deterministic per item rather than reading
+ * a wall-clock timer. [INFERRED shapes throughout — 13-inferred-items.md #50.]
+ */
+function drawPickupIcon(ctx, def, cx, cy, size, age) {
+  const half = size / 2;
+  switch (def.category) {
+    case 'food':
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, half, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillRect(cx - half * 0.4, cy - half * 0.5, Math.max(1, half * 0.4), Math.max(1, half * 0.3));
+      break;
+    case 'bad':
+      ctx.fillStyle = def.color;
+      ctx.fillRect(cx - half, cy - half, size, size);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      fillTriangle(ctx, cx, cy - half, size * 0.3, size * 0.3, 'up');
+      fillTriangle(ctx, cx - half * 0.5, cy + half * 0.6, size * 0.2, size * 0.2, 'down');
+      break;
+    case 'electrical': {
+      const pulse = 0.55 + 0.45 * Math.sin(age * 6);
+      ctx.fillStyle = 'rgba(255, 244, 190, ' + (pulse * 0.5).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.arc(cx, cy, half + 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = def.color;
+      ctx.fillRect(cx - half, cy - half, size, size);
+      ctx.fillStyle = '#fff8dc';
+      fillTriangle(ctx, cx, cy - half * 0.6, size * 0.35, size * 0.5, 'down');
+      fillTriangle(ctx, cx, cy + half * 0.6, size * 0.35, size * 0.5, 'up');
+      break;
+    }
+    case 'dynamite':
+      ctx.fillStyle = def.color;
+      ctx.fillRect(cx - half * 0.6, cy - half, size * 0.6, size);
+      ctx.fillStyle = '#8a5a2a';
+      ctx.fillRect(cx - 1, cy - half - 3, 2, 3);   // fuse stub
+      break;
+    case 'hazard':
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, half, 0, Math.PI * 2);
+      ctx.fill();
+      if (def.id === 'PHOTOGRAPHER') {
+        ctx.fillStyle = '#cfd6e4';
+        ctx.beginPath();
+        ctx.arc(cx, cy, half * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.fillRect(cx - half, cy - 1, size, 1);
+        ctx.fillRect(cx - half, cy + 2, size, 1);
+      }
+      break;
+    case 'weapon':
+      ctx.fillStyle = def.color;
+      if (def.id === 'SAFE') {
+        ctx.fillRect(cx - half, cy - half, size, size);
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(cx, cy, half * 0.4, 0, Math.PI * 2); ctx.stroke();
+      } else if (def.id === 'FLOWER_POT') {
+        ctx.fillRect(cx - half * 0.7, cy - half * 0.2, size * 0.7, size * 0.6);
+        fillTriangle(ctx, cx, cy - half * 0.2, size * 0.9, half * 0.5, 'up');
+      } else {
+        ctx.beginPath();
+        ctx.arc(cx, cy, half, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.beginPath(); ctx.moveTo(cx - half, cy); ctx.lineTo(cx + half, cy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx, cy - half); ctx.lineTo(cx, cy + half); ctx.stroke();
+      }
+      break;
+    default:   // 'neutral'
+      ctx.fillStyle = def.color;
+      ctx.fillRect(cx - half, cy - half, size, size);
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - half + 0.5, cy - half + 0.5, size - 1, size - 1);
+  }
+}
+
 class Pickup extends Entity {
   constructor(def, building, col, row) {
     const r = building.cellRect(col, row);
@@ -1972,11 +2349,13 @@ class Pickup extends Entity {
     this.col = col;
     this.row = row;
     this.fuseTimer = def.fuse || 0;
+    this.age = 0;   // 09-art-audio §10 — cosmetic clock for the electrical glow
   }
 
   update(dt, game) {
     if (!this.alive) return;
     if (!this.building.standing) { this.despawn(); return; }
+    this.age += dt;
     if (this.fuseTimer > 0) {
       this.fuseTimer -= dt;
       if (this.fuseTimer <= 0) { this.fuseTimer = 0; this.trigger(game); }
@@ -1991,6 +2370,11 @@ class Pickup extends Entity {
    */
   trigger(game) {
     if (!this.alive) return;
+    // 09-art-audio §10 — the dynamite blast is an 'explosion'; the
+    // photographer's flash and the bather's splash are a startled 'zap'
+    // (the closest of the seven CONFIG.audio SFX to "hit by a surprise").
+    // [INFERRED — 13-inferred-items.md #51.]
+    SFX.play(this.def.id === 'DYNAMITE' ? 'explosion' : 'zap');
     const monsters = game.entities.ofType(Monster);
     for (let i = 0; i < monsters.length; i++) {
       const m = monsters[i];
@@ -2013,9 +2397,15 @@ class Pickup extends Entity {
     if (!this.alive) return;
     if (this.def.category === 'weapon') {
       if (game) game.entities.add(Projectile.spawnDroppedObject(this.x, this.y, this.def, monster));
+      SFX.play('punch');   // 09-art-audio §10 — knocked loose, not eaten
       this.despawn();
       return;
     }
+    // 09-art-audio §10 — the mouth-open eat overlay (Monster.draw), plus
+    // 'eat' for anything healthy/neutral or 'zap' for anything that hurts —
+    // [INFERRED, 13-inferred-items.md #51].
+    monster.eatTimer = CONFIG.art.eatDuration;
+    SFX.play(this.def.damage ? 'zap' : 'eat');
     if (this.def.heal) monster.heal(this.def.heal, this.def.id);
     if (this.def.damage) monster.applyDamage(this.def.damage, this.def.id);
     if (game) this.awardScore(monster, game);
@@ -2045,18 +2435,23 @@ class Pickup extends Entity {
     this.building.clearPickupCell(this.col, this.row);
   }
 
-  /* ---- 09-art-audio: placeholder icon --------------------------------- */
+  /* ---- 09-art-audio §10 — per-category icon ---------------------------- */
   draw(ctx) {
     if (!this.alive) return;
     const r = this.building.cellRect(this.col, this.row);
     const size = Math.max(6, Math.round(Math.min(r.w, r.h) * 0.4));
     const cx = Math.round(r.x + r.w / 2);
     const cy = Math.round(r.y + r.h / 2);
-    // Warn just before a fuse item goes off.
+    // Warn just before a fuse item goes off — takes over from the icon
+    // entirely, since urgency matters more here than shape.
     const warn = this.fuseTimer > 0 && this.fuseTimer < 0.5 &&
       Math.floor(this.fuseTimer * 10) % 2 === 0;
-    ctx.fillStyle = warn ? '#ffffff' : this.def.color;
-    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    if (warn) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+      return;
+    }
+    drawPickupIcon(ctx, this.def, cx, cy, size, this.age);
   }
 }
 
@@ -2198,6 +2593,8 @@ class Human extends Entity {
    * civilian to eat" per Session 5's own framing. [INFERRED.] */
   consume(monster, game) {
     if (!this.alive) return;
+    monster.eatTimer = CONFIG.art.eatDuration;   // 09-art-audio §10 — art-only
+    SFX.play('eat');
     monster.heal(CONFIG.humans.civilianHeal, this.typeId);
     game.scoreSystem.award(monster, CONFIG.scoring.eatCivilian, this.typeId);
     this.despawn();
@@ -2402,7 +2799,16 @@ class Guardsman extends Enemy {
    * §5.1 only documents eating from a window. */
   consume(monster) {
     if (!this.alive) return;
-    if (this.variant === 'WINDOW') monster.heal(CONFIG.enemies.guardsman.eatHeal, 'GUARDSMAN');
+    // 09-art-audio §10 — [INFERRED, 13-inferred-items.md #51]: the window
+    // variant heals, so it reads as 'eat'; the street variant is destroyed,
+    // not eaten, so it reuses the 'punch' impact sound instead.
+    if (this.variant === 'WINDOW') {
+      monster.eatTimer = CONFIG.art.eatDuration;
+      SFX.play('eat');
+      monster.heal(CONFIG.enemies.guardsman.eatHeal, 'GUARDSMAN');
+    } else {
+      SFX.play('punch');
+    }
     this.despawn();
   }
 
@@ -2411,7 +2817,7 @@ class Guardsman extends Enemy {
     if (this.variant === 'WINDOW' && this.building) this.building.clearEnemyCell(this.col, this.row);
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  /* ---- 09-art-audio §10 — soldier icon: helmet + a rifle line ---------- */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const G = CONFIG.enemies.guardsman;
@@ -2421,6 +2827,12 @@ class Guardsman extends Enemy {
     ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
     ctx.fillStyle = G.helmetColor;
     ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, Math.round(this.h * 0.3));
+    // A rifle held at the ready — window variant aims toward whichever way
+    // its building cell sits, street variant carries it while it runs.
+    const dir = this.variant === 'WINDOW' ? (this.col === 0 ? -1 : 1) : (this.runDir || 1);
+    const armY = feet - Math.round(this.h * 0.55);
+    ctx.fillStyle = G.helmetColor;
+    ctx.fillRect(dir > 0 ? cx + this.w / 2 - 1 : cx - this.w / 2 - 5, armY, 6, 2);
   }
 }
 
@@ -2462,6 +2874,7 @@ class Helicopter extends Enemy {
     this.dropTimer = H.bomb.dropInterval;
     this.burstsFired = 0;
     this.burstTimer = 0;
+    this.rotorPhase = 0;   // 09-art-audio §10 — cosmetic rotor-spin clock
   }
 
   static spawn(fromLeft, mode) {
@@ -2472,6 +2885,7 @@ class Helicopter extends Enemy {
 
   update(dt, game) {
     if (!this.alive) return;
+    this.rotorPhase = (this.rotorPhase + dt * CONFIG.enemies.helicopter.rotorSpinSpeed) % 1;
     if (this.mode === 'BOMB') this.updateBomb(dt, game);
     else this.updateStrafe(dt, game);
   }
@@ -2537,19 +2951,44 @@ class Helicopter extends Enemy {
   /** "Can be destroyed on its approach" — a connecting punch is all it
    * takes. No heal; a helicopter isn't food. */
   consume() {
+    SFX.play('explosion');   // 09-art-audio §10 — [INFERRED, #51]
     this.alive = false;
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  /* ---- 09-art-audio §10 — body + tail boom + cockpit + a spinning-blur
+     main rotor and a small tail rotor -------------------------------------- */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const H = CONFIG.enemies.helicopter;
     const cx = Math.round(this.renderX(alpha));
     const cy = Math.round(this.renderY(alpha));
+    const tailDir = -this.dir;   // tail boom trails behind the direction of travel
+
     ctx.fillStyle = H.bodyColor;
     ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+    // Tail boom + fin.
+    ctx.fillRect(cx + tailDir * this.w / 2, cy - 1, tailDir * 8, 2);
+    ctx.fillRect(cx + tailDir * (this.w / 2 + 6), cy - 3, 1, 5);
+    // Cockpit bubble, on the nose (direction of travel).
     ctx.fillStyle = H.rotorColor;
-    ctx.fillRect(cx - this.w / 2 - 4, cy - this.h / 2 - 2, this.w + 8, 2);
+    ctx.beginPath();
+    ctx.arc(cx - tailDir * this.w * 0.3, cy, this.h * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    // Main rotor — a spinning blur (two crossed lines rotating faster than
+    // the eye can track individual blades).
+    const ang = this.rotorPhase * Math.PI * 2;
+    const span = this.w * 0.7;
+    ctx.strokeStyle = H.rotorColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - Math.cos(ang) * span, cy - this.h / 2 - 2 - Math.sin(ang) * 2);
+    ctx.lineTo(cx + Math.cos(ang) * span, cy - this.h / 2 - 2 + Math.sin(ang) * 2);
+    ctx.stroke();
+    // Tail rotor, spinning in the same phase.
+    ctx.beginPath();
+    ctx.moveTo(cx + tailDir * (this.w / 2 + 6), cy - 3 - Math.cos(ang) * 3);
+    ctx.lineTo(cx + tailDir * (this.w / 2 + 6), cy - 3 + Math.cos(ang) * 3);
+    ctx.stroke();
   }
 }
 
@@ -2583,6 +3022,7 @@ class Vehicle extends Enemy {
     this.dir = dir;
     this.behavior = 'PATROL';
     this.fireTimer = spec.fireInterval;
+    this.lightPhase = 0;   // 09-art-audio §10 — police lightbar flash clock
   }
 
   static spawn(variant, fromLeft) {
@@ -2593,6 +3033,7 @@ class Vehicle extends Enemy {
   update(dt, game) {
     if (!this.alive) return;
     const V = CONFIG.enemies.vehicle;
+    this.lightPhase = (this.lightPhase + dt * V.lightbarFlashSpeed) % 1;
     this.x += this.dir * this.spec.speed * dt;
 
     this.fireTimer -= dt;
@@ -2615,18 +3056,38 @@ class Vehicle extends Enemy {
 
   /** A connecting punch — no heal, a vehicle isn't food. */
   consume() {
+    SFX.play('explosion');   // 09-art-audio §10 — [INFERRED, #51]
     this.alive = false;
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  /* ---- 09-art-audio §10 — treads, a barrel pointing the direction of
+     travel, and (police only) a flashing lightbar ------------------------ */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const cx = Math.round(this.renderX(alpha));
     const feet = Math.round(this.renderY(alpha));
     ctx.fillStyle = this.spec.bodyColor;
     ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
+
+    // Tread notches along the bottom edge.
+    ctx.fillStyle = CONFIG.art.outlineColor;
+    for (let x = -this.w / 2 + 2; x < this.w / 2; x += 5) {
+      ctx.fillRect(cx + x, feet - 2, 2, 2);
+    }
+
     ctx.fillStyle = this.spec.turretColor;
     ctx.fillRect(cx - this.w / 4, feet - this.h - 4, this.w / 2, 4);
+    // Barrel — points the way the vehicle is driving.
+    const barrelLen = this.variant === 'TANK' ? 10 : 7;
+    ctx.fillRect(this.dir > 0 ? cx : cx - barrelLen, feet - this.h - 3, barrelLen, 2);
+
+    if (this.variant === 'POLICE') {
+      const on = this.lightPhase < 0.5;
+      ctx.fillStyle = on ? '#e04a3a' : '#3a6fe0';
+      ctx.fillRect(cx - 4, feet - this.h - 6, 3, 2);
+      ctx.fillStyle = on ? '#3a6fe0' : '#e04a3a';
+      ctx.fillRect(cx + 1, feet - this.h - 6, 3, 2);
+    }
   }
 }
 
@@ -2690,10 +3151,12 @@ class Paratrooper extends Enemy {
 
   /** A connecting punch — no heal, same reasoning as the street Guardsman. */
   consume() {
+    SFX.play('punch');   // 09-art-audio §10 — [INFERRED, #51]
     this.alive = false;
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  /* ---- 09-art-audio §10 — a parachute dome + shroud lines while dropping,
+     a rifle once it's DEFENDING ------------------------------------------ */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const P = CONFIG.enemies.paratrooper;
@@ -2701,12 +3164,23 @@ class Paratrooper extends Enemy {
     const feet = Math.round(this.renderY(alpha));
     if (this.behavior === 'DROPPING') {
       ctx.fillStyle = P.chuteColor;
-      ctx.fillRect(cx - this.w, feet - this.h - 10, this.w * 2, 6);
+      ctx.beginPath();
+      ctx.arc(cx, feet - this.h - 8, this.w, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = P.chuteColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - this.w, feet - this.h - 8); ctx.lineTo(cx - 2, feet - this.h);
+      ctx.moveTo(cx + this.w, feet - this.h - 8); ctx.lineTo(cx + 2, feet - this.h);
+      ctx.stroke();
     }
     ctx.fillStyle = P.color;
     ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, this.h);
     ctx.fillStyle = P.helmetColor;
     ctx.fillRect(cx - this.w / 2, feet - this.h, this.w, Math.round(this.h * 0.3));
+    if (this.behavior === 'DEFENDING') {
+      ctx.fillRect(cx + this.w / 2 - 1, feet - Math.round(this.h * 0.55), 6, 2);
+    }
   }
 }
 
@@ -2755,18 +3229,23 @@ class LightningCloud extends Enemy {
         (this.dir < 0 && this.x < CONFIG.world.leftBound - 20)) this.alive = false;
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  /* ---- 09-art-audio §10 — a fluffy cloud silhouette (overlapping circles)
+     rather than a flat rectangle, still flashing just before it fires ----- */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const L = CONFIG.enemies.lightningCloud;
     const cx = Math.round(this.renderX(alpha));
     const cy = Math.round(this.renderY(alpha));
-    ctx.fillStyle = L.color;
-    ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
-    if (this.boltTimer < 0.3) {
-      ctx.fillStyle = L.flashColor;
-      ctx.fillRect(cx - this.w / 2 + 3, cy - this.h / 2 + 3, this.w - 6, this.h - 6);
+    const flashing = this.boltTimer < 0.3;
+    ctx.fillStyle = flashing ? L.flashColor : L.color;
+    const r = this.h / 2;
+    const lobes = [-0.32, 0, 0.32];
+    for (const t of lobes) {
+      ctx.beginPath();
+      ctx.arc(cx + t * this.w, cy, r * (t === 0 ? 1.15 : 0.9), 0, Math.PI * 2);
+      ctx.fill();
     }
+    ctx.fillRect(cx - this.w / 2 + r * 0.3, cy, this.w - r * 0.6, r * 0.6);
   }
 }
 
@@ -2904,6 +3383,7 @@ class Projectile extends Entity {
       if (target) {
         target.alive = false;
         this.alive = false;
+        SFX.play('explosion');   // 09-art-audio §10 — a vehicle/aircraft going down
         game.scoreSystem.award(this.byMonster, this.weaponScore(game), this.weaponId);
       }
       else if (this.y >= CONFIG.world.groundY) { this.alive = false; }
@@ -2912,15 +3392,22 @@ class Projectile extends Entity {
 
     const hit = game.monsterHitBy(this);
     if (hit) {
+      // 09-art-audio §10 — [INFERRED trigger mapping, 13-inferred-items.md
+      // #51]: a bullet is a 'punch'-weight impact, a shell is heavy enough to
+      // read as an 'explosion', lightning is a 'zap'; dynamite/bombs fall
+      // through to explode(), which plays its own.
       if (this.kind === 'BULLET') {
         hit.applyDamage(CONFIG.health.damage.bullet, 'BULLET');
+        SFX.play('punch');
         this.alive = false;
       } else if (this.kind === 'SHELL') {
         hit.applyDamage(CONFIG.health.damage[this.damageKey], this.damageKey);
         hit.applyKnockback(this.x, CONFIG.health.knockback.shellSpeedX, CONFIG.health.knockback.shellSpeedY);
+        SFX.play('explosion');
         this.alive = false;
       } else if (this.kind === 'LIGHTNING_BOLT') {
         hit.applyDamage(CONFIG.health.damage.lightning, 'lightning');
+        SFX.play('zap');
         this.alive = false;
       } else {
         this.explode(game, hit);
@@ -2955,6 +3442,7 @@ class Projectile extends Entity {
    * counts even outside the blast radius; otherwise anyone within it takes
    * the hit too. */
   explode(game, directHit) {
+    SFX.play('explosion');   // 09-art-audio §10
     const P = this.kind === 'DYNAMITE' ? CONFIG.enemies.projectiles.dynamite : CONFIG.enemies.projectiles.bomb;
     const source = this.kind === 'DYNAMITE' ? 'dynamiteThrown' : 'bomb';
     const monsters = game.entities.ofType(Monster);
@@ -2976,6 +3464,7 @@ class Projectile extends Entity {
     if (!this.building.standing) { this.alive = false; return; }   // punched down first
     this.fuseTimer -= dt;
     if (this.fuseTimer > 0) return;
+    SFX.play('explosion');   // 09-art-audio §10
     const C = CONFIG.enemies.demolitionCharge;
     const row = this.building.rows - 1;
     for (let c = 0; c < this.building.cols; c++) {
@@ -2984,22 +3473,65 @@ class Projectile extends Entity {
     this.alive = false;
   }
 
-  /* ---- 09-art-audio: placeholder icon, fuse flash on CHARGE/DYNAMITE --- */
+  /* ---- 09-art-audio §10 — one shape per munition, in place of the flat
+     rect every kind drew through Session 7. [INFERRED shapes — #50.] ----- */
   draw(ctx, alpha) {
     if (!this.alive) return;
     const cx = Math.round(this.renderX(alpha));
     const cy = Math.round(this.renderY(alpha));
     const P = CONFIG.enemies.projectiles;
+    const warn = this.fuseTimer > 0 && this.fuseTimer < 0.4 && Math.floor(this.fuseTimer * 10) % 2 === 0;
+
+    if (this.kind === 'DROPPED_OBJECT') {
+      // Reuses the Pickup icon it was knocked loose from — same identity in
+      // flight as it had sitting in the window.
+      drawPickupIcon(ctx, { id: this.weaponId, category: 'weapon', color: this.color },
+        cx, cy, Math.max(this.w, this.h), 0);
+      return;
+    }
+
+    if (this.kind === 'LIGHTNING_BOLT') {
+      ctx.strokeStyle = warn ? '#ffffff' : P.bolt.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - this.h / 2);
+      ctx.lineTo(cx - this.w / 2, cy);
+      ctx.lineTo(cx + this.w / 4, cy);
+      ctx.lineTo(cx - this.w / 4, cy + this.h / 2);
+      ctx.stroke();
+      return;
+    }
+
     const color = this.kind === 'BULLET' ? P.bullet.color
       : this.kind === 'DYNAMITE' ? P.dynamite.color
       : this.kind === 'BOMB' ? P.bomb.color
       : this.kind === 'SHELL' ? P.shell.color
-      : this.kind === 'LIGHTNING_BOLT' ? P.bolt.color
-      : this.kind === 'DROPPED_OBJECT' ? this.color
       : CONFIG.enemies.demolitionCharge.color;
-    const warn = this.fuseTimer > 0 && this.fuseTimer < 0.4 && Math.floor(this.fuseTimer * 10) % 2 === 0;
     ctx.fillStyle = warn ? '#ffffff' : color;
-    ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+
+    if (this.kind === 'BOMB') {
+      // Teardrop — a rounded body with a small tail fin.
+      ctx.beginPath();
+      ctx.arc(cx, cy - this.h * 0.15, this.w / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(cx - 1, cy + this.h * 0.2, 2, this.h * 0.3);
+    } else if (this.kind === 'SHELL') {
+      // A stretched diamond reads as "moving fast" better than a rectangle.
+      ctx.beginPath();
+      ctx.moveTo(cx - this.w / 2, cy);
+      ctx.lineTo(cx, cy - this.h / 2);
+      ctx.lineTo(cx + this.w / 2, cy);
+      ctx.lineTo(cx, cy + this.h / 2);
+      ctx.closePath();
+      ctx.fill();
+    } else if (this.kind === 'DYNAMITE') {
+      ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+      ctx.fillStyle = '#8a5a2a';
+      ctx.fillRect(cx - 1, cy - this.h / 2 - 3, 2, 3);   // fuse stub
+    } else {
+      // BULLET, CHARGE — the plain rect every kind started as.
+      ctx.fillRect(cx - this.w / 2, cy - this.h / 2, this.w, this.h);
+    }
   }
 }
 
@@ -3087,6 +3619,19 @@ class Monster extends Entity {
        leaves the forced knockback vx alone instead of recomputing it from
        input every tick. */
     this.knockbackTimer = 0;
+
+    /* 09-art-audio §10 — new in Session 11, art-only. `eatTimer` drives the
+       mouth-open overlay after a connecting eat/grab/cannibalize (see
+       resolvePunch); `hitReactTimer` drives the damage flash/flinch after
+       applyDamage. Neither affects movement or timing — both are read only
+       by draw(). */
+    this.eatTimer = 0;
+    this.hitReactTimer = 0;
+
+    // 09-art-audio §10 — "monster roars" [INFERRED trigger — 13-inferred-
+    // items.md #51]: read as a roar on spawn/continue, characterful rather
+    // than a documented arcade moment.
+    SFX.play('roar');
   }
 
   /** 0..1, for the debug bar and (Session 8) the real HUD. */
@@ -3315,6 +3860,8 @@ class Monster extends Entity {
       // Game.updateContinueWindows. That consequence is the point of the
       // mechanic, not a side effect of it.
       other.alive = false;
+      this.eatTimer = CONFIG.art.eatDuration;    // 09-art-audio §10 — art-only
+      SFX.play('eat');
       this.heal(CONFIG.health.cannibalHeal, 'CANNIBALISM');
       game.scoreSystem.award(this, CONFIG.scoring.eatDefeatedMonster, 'eatDefeatedMonster');
       return 'cannibalize';
@@ -3355,6 +3902,9 @@ class Monster extends Entity {
     human.state = HumanState.HELD;
     this.holding = human;
     game.scoreSystem.award(this, game.scoreSystem.pickInRange(CONFIG.scoring.designatedVictimHold), 'designatedVictimHold');
+    // 09-art-audio §10 — a triumphant roar on the catch [INFERRED trigger —
+    // 13-inferred-items.md #51].
+    SFX.play('roar');
   }
 
   /** Drop whatever this monster is currently holding — defeat and knock-off
@@ -3374,6 +3924,8 @@ class Monster extends Entity {
     if (this.defeated) return;
     this.energy = clamp(this.energy - amount, 0, CONFIG.health.maxEnergy);
     this.lastDamageSource = source;
+    // 09-art-audio §10 — the hit-react flash/flinch (draw()), art-only.
+    if (amount > 0) this.hitReactTimer = CONFIG.art.hitReactDuration;
     if (this.energy <= 0) this.beginDefeat();
   }
 
@@ -3488,6 +4040,10 @@ class Monster extends Entity {
       this.grabLockTimer = Math.max(0, this.grabLockTimer - dt);
       if (this.grabLockTimer === 0) this.grabIgnore = null;
     }
+    // 09-art-audio §10 — art-only overlay timers, decremented alongside the
+    // punch timers above.
+    if (this.eatTimer > 0) this.eatTimer = Math.max(0, this.eatTimer - dt);
+    if (this.hitReactTimer > 0) this.hitReactTimer = Math.max(0, this.hitReactTimer - dt);
 
     /* --- direction (§3: 8-way stick; punch goes the way you're holding,
            straight ahead if neutral) --------------------------------------- */
@@ -3499,6 +4055,7 @@ class Monster extends Entity {
       if (dir !== 0) this.facing = dir;
       this.punchTimer = M.punchDuration;
       this.punchHasHit = false;
+      SFX.play('punch');   // 09-art-audio §10 — every swing, connecting or not
     }
 
     /* [INFERRED] Punching roots the monster on any surface — street, face or
@@ -3774,17 +4331,37 @@ class Monster extends Entity {
     if (this.x < b.left || this.x > b.right) this.detach(null, false);
   }
 
-  /* ---- 09-art-audio: placeholder rectangle art ------------------------
-     Rectangles only until the Session 11 sprite pass. All three types draw
-     from the same rig with a palette swap — which is what the original did
-     for George and Ralph anyway (01-monsters.md §2.1).                     */
+  /* ---- 09-art-audio §10 — the Session 11 sprite/animation pass ---------
+     Still 100% procedural canvas (no image assets, per the session brief),
+     but now a real rig rather than a bare rectangle: idle/walk/climb/jump/
+     punch (the animState machine Session 1-10 already drove), plus four
+     more states this session adds — grab/hold (an arm reaching toward the
+     victim it's holding), eat (a brief open-mouth overlay after a
+     connecting eat/grab/cannibalize), hit-react (a flash + jolt after
+     applyDamage), and revert-to-human (drawHuman, below). George and Ralph
+     share one rig with a head/palette swap (`type.rig === 'SHARED'`,
+     `type.earStyle` picks the swap); Lizzie draws her own distinct
+     silhouette (`'LIZARD'` — snout, back spikes, a swaying tail) per
+     §2.1's "George and Ralph share a body rig ... Lizzie is the distinct
+     one" [FAITHFUL]. Every silhouette/timing choice is otherwise
+     [INFERRED — 13-inferred-items.md #50/#51]: no source describes the
+     arcade's actual sprites beyond that one reuse fact.                   */
   draw(ctx, alpha) {
     if (this.defeated) { this.drawHuman(ctx, alpha); return; }
 
     const A = CONFIG.art;
-    const cx = Math.round(this.renderX(alpha));
+    const rig = this.type.rig;
+    let cx = Math.round(this.renderX(alpha));
     const feet = Math.round(this.renderY(alpha));
     const w = this.w, h = this.h;
+
+    // Hit-react: a brief flash + a small jolt opposite the facing direction,
+    // so a connecting hit reads even without a glance at the energy bar.
+    const flashing = this.hitReactTimer > 0 &&
+      Math.floor(this.hitReactTimer * 40) % 2 === 0;
+    if (this.hitReactTimer > 0) cx -= this.facing * A.hitReactShiftPx;
+    const bodyColor = flashing ? A.hitReactFlashColor : this.type.bodyColor;
+    const headColor = flashing ? A.hitReactFlashColor : this.type.headColor;
     const left = cx - w / 2;
 
     const legH = Math.round(h * A.legHeightFrac);
@@ -3799,6 +4376,10 @@ class Monster extends Entity {
       ctx.fillStyle = A.shadowColor;
       ctx.fillRect(left, feet - A.shadowHeight / 2, w, A.shadowHeight);
     }
+
+    // Tail (Lizzie only) — drawn first, behind everything, swaying opposite
+    // the walk cycle so it reads as counterbalancing the stride.
+    if (rig === 'LIZARD') this.drawTail(ctx, left, feet, w, headColor);
 
     // Legs — swing while walking, tuck while airborne, alternate while climbing.
     let legOffsetA = 0, legOffsetB = 0, legLift = 0;
@@ -3816,43 +4397,70 @@ class Monster extends Entity {
     ctx.fillRect(left + w - 1 - legW + legOffsetB, feet - legH - legLift, legW, legH);
 
     // Body.
-    ctx.fillStyle = this.type.bodyColor;
+    ctx.fillStyle = bodyColor;
     ctx.fillRect(left, bodyTop, w, bodyH);
 
-    // Climbing grip — both arms out on the wall, offset out of phase so the
-    // cling reads as a climb and not as a monster stuck to a poster.
-    if (this.stance === Stance.CLING && !this.isPunching) {
-      const armH = Math.max(2, Math.round(h * A.armThicknessFrac));
+    // Back spikes (Lizzie only), along the spine.
+    if (rig === 'LIZARD') this.drawSpikes(ctx, left, bodyTop, w, headColor);
+
+    // One arm pose at a time, in priority order: punching beats climbing
+    // beats holding — the same "rooted" priority Monster.update already
+    // gives a punch over every other action.
+    const armH = Math.max(2, Math.round(h * A.armThicknessFrac));
+    const armY = feet - h + CONFIG.monster.punchBoxOffsetY;
+    if (this.isPunching) {
+      // Punching arm — reaches out in the facing direction.
+      const reach = CONFIG.monster.punchReach * this.punchExtension;
+      const armX = this.facing > 0 ? cx + w / 2 : cx - w / 2 - reach;
+      ctx.fillStyle = headColor;
+      ctx.fillRect(armX, armY, reach, armH);
+    } else if (this.stance === Stance.CLING) {
+      // Climbing grip — both arms out on the wall, offset out of phase so
+      // the cling reads as a climb and not as a monster stuck to a poster.
       const reach = Math.round(CONFIG.monster.punchReach * 0.45);
       const grip = Math.sin(this.climbPhase * Math.PI * 2) * A.legSwingPx;
-      const armY = feet - h + CONFIG.monster.punchBoxOffsetY;
-      ctx.fillStyle = this.type.headColor;
+      ctx.fillStyle = headColor;
       ctx.fillRect(left - reach, armY + grip, reach, armH);
       ctx.fillRect(left + w, armY - grip, reach, armH);
+    } else if (this.holding) {
+      // §2.3 grab/hold — one arm reaching toward the victim it's carrying
+      // (Human.updateHeld positions the victim itself at this same offset).
+      const H = CONFIG.humans;
+      const holdArmH = Math.max(2, Math.round(h * A.holdArmThicknessFrac));
+      const armX = this.facing > 0 ? cx + w / 2 - 2 : cx - w / 2 - H.holdOffsetX + 2;
+      ctx.fillStyle = headColor;
+      ctx.fillRect(armX, armY + 3, H.holdOffsetX, holdArmH);
     }
 
-    // Punching arm — reaches out in the facing direction.
-    if (this.isPunching) {
-      const armH = Math.max(2, Math.round(h * A.armThicknessFrac));
-      const reach = CONFIG.monster.punchReach * this.punchExtension;
-      const armY = feet - h + CONFIG.monster.punchBoxOffsetY;
-      const armX = this.facing > 0 ? cx + w / 2 : cx - w / 2 - reach;
-      ctx.fillStyle = this.type.headColor;
-      ctx.fillRect(armX, armY, reach, armH);
-    }
+    // Head — rig-specific silhouette.
+    if (rig === 'LIZARD') this.drawLizardHead(ctx, cx, feet, h, headW, headH, headColor);
+    else this.drawSharedHead(ctx, cx, feet, h, headW, headH, headColor);
 
-    // Head + eyes.
-    ctx.fillStyle = this.type.headColor;
-    ctx.fillRect(cx - headW / 2, feet - h, headW, headH);
+    // Eyes — Lizzie gets slit pupils instead of square ones.
     ctx.fillStyle = A.outlineColor;
     const eyeY = feet - h + Math.round(headH / 2) - A.eyeSize / 2;
     const eyeX = this.facing > 0
       ? cx - headW / 2 + headW - A.eyeInset - A.eyeSize * 2 - 1
       : cx - headW / 2 + A.eyeInset;
-    ctx.fillRect(eyeX, eyeY, A.eyeSize, A.eyeSize);
-    ctx.fillRect(eyeX + A.eyeSize + 1, eyeY, A.eyeSize, A.eyeSize);
+    if (rig === 'LIZARD') {
+      ctx.fillRect(eyeX + A.eyeSize / 2, eyeY - 1, 1, A.eyeSize + 2);
+      ctx.fillRect(eyeX + A.eyeSize * 1.5 + 1, eyeY - 1, 1, A.eyeSize + 2);
+    } else {
+      ctx.fillRect(eyeX, eyeY, A.eyeSize, A.eyeSize);
+      ctx.fillRect(eyeX + A.eyeSize + 1, eyeY, A.eyeSize, A.eyeSize);
+    }
 
-    // Initial, so the three types are identifiable before there's art.
+    // Eat overlay — an open mouth for a beat after a connecting eat/grab/
+    // cannibalize (Monster.resolvePunch/interactWithHuman/Human.consume/
+    // Pickup.consume all set eatTimer; see those for the exact triggers).
+    if (this.eatTimer > 0) {
+      const mouthW = Math.max(3, Math.round(headW * 0.4));
+      const mouthH = Math.max(2, Math.round(headH * 0.3));
+      ctx.fillStyle = A.outlineColor;
+      ctx.fillRect(cx - mouthW / 2, feet - h + headH - mouthH - 1, mouthW, mouthH);
+    }
+
+    // Initial, so the three types are identifiable at a glance.
     ctx.fillStyle = A.outlineColor;
     ctx.font = CONFIG.ui.smallFontSize + 'px monospace';
     ctx.textAlign = 'center';
@@ -3860,11 +4468,85 @@ class Monster extends Entity {
     ctx.fillText(this.type.initial, cx, bodyTop + bodyH / 2);
   }
 
+  /** George/Ralph's shared body rig, head half of the head/palette swap
+   * (§2.1) — `type.earStyle` is the only thing that differs between them. */
+  drawSharedHead(ctx, cx, feet, h, headW, headH, headColor) {
+    const A = CONFIG.art, type = this.type;
+    const headTop = feet - h;
+    ctx.fillStyle = headColor;
+    ctx.fillRect(cx - headW / 2, headTop, headW, headH);
+
+    if (type.earStyle === 'POINTED') {
+      // Ralph — wolf ears (pointed) + a small forward snout.
+      ctx.fillStyle = type.trimColor;
+      fillTriangle(ctx, cx - headW / 2 + A.earSize / 2, headTop + 1, A.earSize, A.earSize, 'up');
+      fillTriangle(ctx, cx + headW / 2 - A.earSize / 2, headTop + 1, A.earSize, A.earSize, 'up');
+      const snoutW = Math.max(3, Math.round(headW * A.snoutWidthFrac));
+      const snoutH = Math.max(2, Math.round(headH * A.snoutHeightFrac));
+      const snoutX = this.facing > 0 ? cx + headW / 2 - 2 : cx - headW / 2 - snoutW + 2;
+      ctx.fillStyle = headColor;
+      ctx.fillRect(snoutX, feet - h + headH - snoutH, snoutW, snoutH);
+    } else {
+      // George — rounded ape ears + a brow ridge.
+      ctx.fillStyle = type.trimColor;
+      const earR = A.earSize / 2;
+      ctx.beginPath(); ctx.arc(cx - headW / 2, headTop + earR, earR, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + headW / 2, headTop + earR, earR, 0, Math.PI * 2); ctx.fill();
+      ctx.fillRect(cx - headW / 2, headTop, headW, A.browHeight);
+    }
+  }
+
+  /** Lizzie's own silhouette — an elongated, forward-projecting jaw instead
+   * of a flat head-front. */
+  drawLizardHead(ctx, cx, feet, h, headW, headH, headColor) {
+    const A = CONFIG.art;
+    const headTop = feet - h;
+    ctx.fillStyle = headColor;
+    ctx.fillRect(cx - headW / 2, headTop, headW, headH);
+    const snoutLen = Math.round(headW * A.lizardSnoutLengthFrac);
+    const snoutY = headTop + Math.round(headH * 0.3);
+    const snoutH = Math.round(headH * 0.55);
+    const snoutX = this.facing > 0 ? cx + headW / 2 : cx - headW / 2 - snoutLen;
+    ctx.fillRect(snoutX, snoutY, snoutLen, snoutH);
+  }
+
+  /** Three small triangles along the spine — Lizzie only. */
+  drawSpikes(ctx, left, bodyTop, w, color) {
+    const A = CONFIG.art;
+    ctx.fillStyle = color;
+    for (let i = 0; i < A.lizardSpikeCount; i++) {
+      const t = (i + 0.5) / A.lizardSpikeCount;
+      fillTriangle(ctx, left + w * t, bodyTop + 2, 5, A.lizardSpikeHeight, 'up');
+    }
+  }
+
+  /** A tail extending opposite the facing direction, swaying opposite the
+   * walk cycle (counterbalancing the stride) — Lizzie only. */
+  drawTail(ctx, left, feet, w, color) {
+    const A = CONFIG.art;
+    const len = Math.round(w * A.lizardTailLengthFrac);
+    const sway = this.animState === 'walk'
+      ? Math.sin(this.walkPhase * Math.PI * 2 + Math.PI) * A.lizardTailSwayPx
+      : 0;
+    const baseX = this.facing > 0 ? left : left + w;
+    const tipX = baseX + (this.facing > 0 ? -len : len) + sway;
+    const baseY = feet - 3;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(baseX, baseY - 5);
+    ctx.lineTo(baseX, baseY + 2);
+    ctx.lineTo(tipX, baseY - 4);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   /**
    * §4.1 "reverts to its (naked) human form and walks off the side of the
-   * screen." Placeholder rectangle art like everything pre-Session 11 — a
-   * smaller, plain figure so a defeated monster reads as "not the monster"
-   * at a glance even without real sprites.
+   * screen." A smaller, plain figure — with the same walk-cycle convention
+   * the monster itself uses, at a smaller scale, so the walk-off reads as
+   * an actual walk rather than a slide. Session 10's humanFormRect (the
+   * punch target for cannibalism) is unaffected — legs/body still fill
+   * exactly the same w×h box this always drew.
    */
   drawHuman(ctx, alpha) {
     const A = CONFIG.art;
@@ -3873,12 +4555,20 @@ class Monster extends Entity {
     const w = Math.round(this.w * A.humanFormWidthFrac);
     const h = Math.round(this.h * A.humanFormHeightFrac);
     const headH = Math.round(h * 0.35);
+    const legH = Math.round(h * 0.3);
+    const bodyH = h - headH - legH;
+    const legW = Math.max(1, Math.round(w * 0.22));
 
     ctx.fillStyle = A.shadowColor;
     ctx.fillRect(cx - w / 2, feet - A.shadowHeight / 2, w, A.shadowHeight);
 
+    const swing = Math.sin(this.walkPhase * Math.PI * 2) * (A.legSwingPx * 0.4);
+    ctx.fillStyle = A.outlineColor;
+    ctx.fillRect(cx - w / 2 + swing, feet - legH, legW, legH);
+    ctx.fillRect(cx + w / 2 - legW - swing, feet - legH, legW, legH);
+
     ctx.fillStyle = A.humanColor;
-    ctx.fillRect(cx - w / 2, feet - h, w, h - headH);
+    ctx.fillRect(cx - w / 2, feet - h + headH, w, bodyH);
     ctx.fillRect(cx - Math.round(w * 0.35), feet - h, Math.round(w * 0.7), headH);
   }
 }
@@ -4362,6 +5052,23 @@ function blinkOn(time) {
   return (time % CONFIG.ui.blinkPeriod) < CONFIG.ui.blinkPeriod / 2;
 }
 
+/** 09-art-audio §10 — a chasing row of marquee bulbs across the title
+ * screen, purely decorative arcade-cabinet dressing. Alternate bulbs are on
+ * a beat apart, `time`-driven rather than per-bulb state so the pattern
+ * needs no storage of its own. */
+function drawMarqueeBulbs(ctx, time) {
+  const U = CONFIG.ui, V = CONFIG.view;
+  const n = U.marqueeBulbCount;
+  const span = (n - 1) * U.marqueeBulbGap;
+  const startX = V.width / 2 - span / 2;
+  const beat = Math.floor(time * 4);
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = (i + beat) % 3 === 0 ? U.marqueeOnColor : U.marqueeOffColor;
+    ctx.fillRect(startX + i * U.marqueeBulbGap - U.marqueeBulbSize / 2,
+      U.marqueeY - U.marqueeBulbSize / 2, U.marqueeBulbSize, U.marqueeBulbSize);
+  }
+}
+
 /* A KeyboardEvent.code turned into something printable on the HUD. Not a
    tunable — purely how a key map (CONFIG.players.slots, which is the
    tunable) reads on screen. Anything not listed falls back to stripping the
@@ -4392,9 +5099,19 @@ function drawHudStrip(game) {
       // the entity list until the end-of-tick sweep, and picking that one
       // would flash an empty bar over a perfectly healthy monster.
       const monster = monsters.find(function (m) { return m.alive && m.playerIndex === player.index; });
+
+      // 09-art-audio §10 — an arcade-style panel behind the column, bordered
+      // in that player's own monster color so three columns at a glance
+      // read as three different fighters, not just three numbers.
+      ctx.fillStyle = U.hudPanelColor;
+      ctx.fillRect(x - 3, U.hudTop - 2, U.hudPanelWidth, U.hudPanelHeight);
+      ctx.strokeStyle = type.headColor;
+      ctx.lineWidth = U.hudPanelBorderWidth;
+      ctx.strokeRect(x - 2.5, U.hudTop - 1.5, U.hudPanelWidth - 1, U.hudPanelHeight - 1);
+
       textAt(ctx, player.label + '  ' + type.name, x, U.hudTop, U.bodyFontSize, U.textColor);
       textAt(ctx, String(player.score).padStart(6, '0'), x, U.hudTop + U.hudLineHeight, U.bodyFontSize, U.accentColor);
-      drawHudEnergyBar(ctx, x, U.hudTop + U.hudLineHeight * 2, monster);
+      drawHudEnergyBar(ctx, x, U.hudTop + U.hudLineHeight * 2, monster, game.simTime);
     } else {
       /* 07-multiplayer §8.1 — the reserved column now also advertises how
          to buy into it, since "players can join at any time" is invisible
@@ -4409,15 +5126,29 @@ function drawHudStrip(game) {
 }
 
 /** §9's per-monster energy bar. `monster` is null before PLAY spawns one
- * (e.g. CHARACTER_SELECT, which also calls drawHudStrip) — draws empty. */
-function drawHudEnergyBar(ctx, x, y, monster) {
+ * (e.g. CHARACTER_SELECT, which also calls drawHudStrip) — draws empty.
+ * 09-art-audio §10 — now a segmented arcade-style bar (chunky dividers
+ * rather than a smooth gradient) that flashes once critically low. */
+function drawHudEnergyBar(ctx, x, y, monster, simTime) {
   const U = CONFIG.ui;
   const w = U.hudBarWidth, h = U.hudBarHeight;
   const frac = monster ? clamp(monster.energyFraction, 0, 1) : 0;
+  const critical = frac > 0 && frac <= 0.3;
+  const hidden = critical && Math.floor((simTime || 0) / U.hudBarLowFlashPeriod) % 2 === 0;
+
   ctx.fillStyle = U.hudBarBgColor;
   ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = frac > 0.3 ? U.hudBarColor : U.hudBarLowColor;
-  ctx.fillRect(x, y, Math.round(w * frac), h);
+  if (!hidden) {
+    ctx.fillStyle = critical ? U.hudBarLowColor : U.hudBarColor;
+    ctx.fillRect(x, y, Math.round(w * frac), h);
+  }
+  // Segment dividers — an arcade energy bar reads as discrete chunks of
+  // health, not a continuous gradient.
+  ctx.fillStyle = U.hudBarSegColor;
+  const segW = w / U.hudBarSegments;
+  for (let s = 1; s < U.hudBarSegments; s++) {
+    ctx.fillRect(x + Math.round(s * segW), y, 1, h);
+  }
   ctx.strokeStyle = U.dimTextColor;
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
@@ -4567,7 +5298,9 @@ function drawDebug(game) {
   const ctx = game.ctx;
   const lines = [
     'STATE ' + game.state + '   FPS ' + game.fps.toFixed(0) +
-      '   TICK ' + game.tickCount + '   SIM ' + game.simTime.toFixed(1) + 's',
+      '   TICK ' + game.tickCount + '   SIM ' + game.simTime.toFixed(1) + 's' +
+      '   AUDIO ' + (!SFX.ctx ? 'LOCKED' : SFX.muted ? 'MUTED' : 'ON') +
+      ' (' + keyLabel(CONFIG.audio.muteKey) + ')',
   ];
   // Session 9 readout: where the run is in the 768-day sequence, what the
   // day system resolved for it, and the scalar that day is driving.
@@ -4847,6 +5580,10 @@ class Game {
 
   update(dt) {
     this.input.poll();
+    // 09-art-audio §10 — mute toggle. Global (not per-state, not a player
+    // action) so it works from the title screen too, the same reasoning as
+    // the debug day-jump keys' raw wasPressed edge.
+    if (this.input.wasPressed(CONFIG.audio.muteKey)) SFX.toggleMute();
     this.stateTime += dt;
     this.simTime += dt;
     this.tickCount++;
@@ -5809,6 +6546,13 @@ Game.prototype.handlers = {
       const ctx = game.ctx;
       const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
       drawStreet(ctx);
+      // 09-art-audio §10 — a marquee bulb row + a double-line frame around
+      // the wordmark, arcade-cabinet dressing rather than a functional HUD.
+      drawMarqueeBulbs(ctx, game.stateTime);
+      ctx.strokeStyle = U.accentColor;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(V.width / 2 - 130, L.titleY - 28, 260, 46);
+      ctx.strokeRect(V.width / 2 - 134, L.titleY - 32, 268, 54);
       textAt(ctx, 'RAMPAGE', V.width / 2, L.titleY, U.titleFontSize, U.accentColor, 'center');
       textAt(ctx, 'PHASE 1 — FAITHFUL REPLICA', V.width / 2, L.subtitleY, U.bodyFontSize, U.textColor, 'center');
       if (blinkOn(game.stateTime)) {
@@ -5981,6 +6725,7 @@ Game.prototype.handlers = {
      fires, since it rewards *clearing* day 128, not arriving at day 129. */
   [GameState.DAY_CLEAR]: {
     enter(game) {
+      SFX.play('dayClearSting');           // 09-art-audio §10
       game.storeEnergies();               // §7.1 — health carries to the next day
       game.closeContinueWindows();        // §7.4 — the walk-off ended with the day
       game.clearedDay = game.day;
@@ -6077,6 +6822,7 @@ function boot() {
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
     Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
     Vehicle, Paratrooper, LightningCloud, ScoreSystem, LevelData, Train, Boater,
+    AudioManager, SFX,   // 09-art-audio §10 — new in Session 11
     jumpToDay: function (n) { return game.jumpToDay(n); },
   };
   return game;

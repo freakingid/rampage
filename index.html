@@ -43,7 +43,9 @@
      10-architecture — Entity base class            §11.3
      10-architecture — EntityManager                §11.3
      10-architecture — InputManager                 §11.3
-     02-movement-destruction ......... Building + cell grid (§3.2)
+     02-movement-destruction ......... Building + cell grid, damage & collapse
+                                       (§3.2, §3.3)
+     09-art-audio .................... DustPuff (collapse particle)
      01-monsters ..................... Monster class (all three types identical)
      02-movement-destruction ......... movement/traversal (§3.1) — inside Monster
      09-art-audio .................... placeholder rectangle art
@@ -56,6 +58,11 @@
    Session 2 scope: Building entity (grid of destructible cells), a hardcoded
    row of buildings, climbing/cling, rooftop walking, jump-to-grab. Cells carry
    damage state but nothing damages them yet — that's Session 3.
+   Session 3 scope: destruction & collapse. Punches damage cells INTACT →
+   CRACKED → HOLE → GONE from the ground and from a face; buildings enter
+   SHAKING and then collapse to rubble with a dust puff; roof-drop collapse;
+   fall damage for anyone still on the building; collapse attribution
+   (`causedBy`) for the §6 2,500-point rule.
    ========================================================================== */
 
 
@@ -120,6 +127,15 @@ const CONFIG = {
     punchReach: 18,           // px in front of the body the fist covers
     punchBoxHeight: 22,
     punchBoxOffsetY: 10,      // px down from the top of the monster
+    punchDamage: 1,           // cell HP a connecting punch removes [INFERRED]
+                              // 1 per punch against cellHp 3 = one damage
+                              // state per punch. See Monster.resolvePunch.
+
+    /* -- Damage taken (03-eating-health.md §4.1) -------------------------
+       PLACEHOLDER. Session 4 builds the HealthSystem and owns the real
+       numbers; Session 3 needs one value to push through applyDamage so the
+       collapse path has somewhere to land. 13-inferred-items.md #2.       */
+    fallDamage: 30,           // §3.3 "a large chunk of damage" [INFERRED]
     walkCycleTime: 0.36,      // s per full two-step walk cycle at walkSpeed
     spawnX: 120,              // P1 spawn; later slots offset by spawnSpacing
     spawnSpacing: 60,
@@ -152,7 +168,8 @@ const CONFIG = {
     cellWidth: 22,
     cellHeight: 22,
     cellHp: 3,                // hits to take a cell INTACT→CRACKED→HOLE→GONE
-                              // [INFERRED] — Session 3 owns the damage curve
+                              // [INFERRED] — the damage curve is spread evenly
+                              // across the states, so this stays tunable
     startX: 6,                // left edge of the first building
     // cols × rows × palette, laid out across the street. 5 buildings, total
     // 396 px of frontage + 104 px of gaps = the full 6..506 playable span.
@@ -163,6 +180,53 @@ const CONFIG = {
       { cols: 5, rows: 6, palette: 0, gapAfter: 26 },
       { cols: 3, rows: 8, palette: 1, gapAfter: 0  },
     ],
+    /* -- Collapse (02-movement-destruction.md §3.3) ----------------------
+       [INFERRED — 13-inferred-items.md #5] The GDD is explicit that the exact
+       trigger is undocumented and gives the Phase 1 model: "when total
+       remaining structure drops below a threshold OR the bottom row is
+       destroyed". Both numbers below are judgement calls, not measurements.
+
+       collapseStructureFraction 0.5 — half the building's total cell HP gone
+         brings it down. That's the "punch it apart anywhere" route: ~32
+         connecting punches on the smallest building in the day layout.
+       collapseOnBottomRowGone — the "loss of lower support" route, and
+         deliberately the faster one (~18 punches on a 3-wide building, all
+         reachable from the street). It is the same route the National Guard's
+         demolition charges at the base take in §3.2, which is why the base
+         being critical is the reading chosen here.
+       roofDropStructureFraction 0.8 — §3.2 roof-drop: "weaken a building,
+         then jump onto its roof". A fresh building (1.0) is never brought
+         down by a landing; 20% of its structure gone is "weakened".
+       shakeDuration 1.2 s — the §3.3 tell. Long enough to react and jump
+         clear (a jump leaves the surface on the frame it is pressed), short
+         enough that climbing down a tall face is not an escape.            */
+    collapseStructureFraction: 0.5,
+    collapseOnBottomRowGone: true,
+    roofDropStructureFraction: 0.8,
+    shakeDuration: 1.2,
+    shakeAmplitude: 2,        // px of horizontal judder while SHAKING
+    shakeFrequency: 18,       // judder cycles per second
+
+    /* -- Rubble (§3.3) — a mound on the street. Phase 1 rubble is scenery:
+       it does not block the street (the street is a lane, 13-inferred #15),
+       cannot be climbed and cannot be landed on. Session 4 hangs exposed
+       food/items off it.                                                    */
+    rubbleHeight: 12,
+    rubbleColor: '#4a4048',
+    rubbleShadeColor: '#332c33',
+
+    /* -- Dust puff thrown up by a collapse (§3.3, 09-art-audio) ---------- */
+    dust: {
+      count: 16,
+      life: 1.0,              // s before a puff fades out entirely
+      startSize: 5,           // px square, grows as it fades
+      growth: 18,
+      riseSpeed: 55,          // px/s upward
+      spreadSpeed: 46,        // px/s sideways at the building's edges
+      color: '206,200,186',   // rgb triple; alpha is animated
+      maxAlpha: 0.55,
+    },
+
     roofCapHeight: 4,         // drawn *below* the roof line, so feet rest on top
     roofCapOverhang: 1,
     windowInsetX: 5,
@@ -305,7 +369,8 @@ const CONFIG = {
     y: 320,
     color: '#7f8ba3',
     showPunchBox: true,
-    punchBoxColor: 'rgba(232,196,82,0.55)',
+    punchBoxColor: 'rgba(232,196,82,0.55)',       // the visible fist (getPunchBox)
+    punchTargetColor: 'rgba(232,82,82,0.22)',     // what damages cells (punchTargetRect)
     fpsSmoothing: 0.9,        // exponential smoothing on the frame-rate readout
   },
 };
@@ -482,9 +547,13 @@ class InputManager {
    02-movement-destruction §3.2 — Building
 
    "A building is a vertical stack of destructible cells (a grid of
-   windows/wall sections)." Each cell holds a state and HP. Session 2 only
-   *reads* the grid (to draw it); Session 3 adds the punch → CRACKED → HOLE →
-   GONE progression and collapse, so the state lives here from the start.
+   windows/wall sections)." Each cell holds a state and HP.
+
+   Session 3 (§3.2/§3.3) adds the whole destruction path on top of that grid:
+   punches drive a cell INTACT → CRACKED → HOLE → GONE, and a building runs
+   STANDING → SHAKING → RUBBLE. A building is *solid to traversal* while it is
+   STANDING or SHAKING (`standing` is true for both) — the shaking window is a
+   warning, not a removal — and stops being climbable the instant it is RUBBLE.
 
    Anchor matches Entity: x = horizontal centre, y = base (feet line) — which
    is the street, so a building's base y is always CONFIG.world.groundY and
@@ -503,6 +572,26 @@ const CellState = {
   GONE:    'GONE',      // section removed entirely
 };
 
+/* Whole-building lifecycle (§3.3). SHAKING is the tell that gives a monster
+   on the building a chance to jump clear before the fall damage lands. */
+const BuildingState = {
+  STANDING: 'STANDING',
+  SHAKING:  'SHAKING',
+  RUBBLE:   'RUBBLE',
+};
+
+/* The non-GONE damage states in order. A cell's HP is spread evenly across
+   them so CONFIG.buildings.cellHp stays a free tunable: at cellHp 3 that's one
+   punch per state, at cellHp 6 it's two, and nothing else has to change. */
+const CELL_DAMAGE_ORDER = [CellState.INTACT, CellState.CRACKED, CellState.HOLE];
+
+function cellStateForHp(hp, maxHp) {
+  if (hp <= 0) return CellState.GONE;
+  const perStage = maxHp / CELL_DAMAGE_ORDER.length;
+  const stagesLeft = clamp(Math.ceil(hp / perStage), 1, CELL_DAMAGE_ORDER.length);
+  return CELL_DAMAGE_ORDER[CELL_DAMAGE_ORDER.length - stagesLeft];
+}
+
 class Building extends Entity {
   constructor(leftX, cols, rows, paletteIndex, index) {
     const B = CONFIG.buildings;
@@ -510,22 +599,47 @@ class Building extends Entity {
     const h = rows * B.cellHeight;
     super(leftX + w / 2, CONFIG.world.groundY, w, h);
 
-    this.index = index;                 // stable id; Session 3 uses it for attribution
+    this.index = index;                 // stable id, used in collapse records
     this.cols = cols;
     this.rows = rows;
     this.palette = B.palettes[paletteIndex % B.palettes.length];
 
-    // Grid of destructible cells. Nothing damages them until Session 3.
+    // Grid of destructible cells (§3.2).
     this.cells = [];
     for (let r = 0; r < rows; r++) {
       const row = [];
       for (let c = 0; c < cols; c++) row.push({ state: CellState.INTACT, hp: B.cellHp });
       this.cells.push(row);
     }
+
+    /* Collapse bookkeeping (§3.3). structureHp is maintained incrementally
+       rather than re-summed, so the threshold test is O(1) per punch. */
+    this.structureState = BuildingState.STANDING;
+    this.shakeTimer = 0;
+    this.structureHpMax = rows * cols * B.cellHp;
+    this.structureHp = this.structureHpMax;
+
+    /* Attribution (§6): the 2,500-point "building destroyed" bonus is paid
+       only to the monster that actually brought it down. Set when the building
+       starts shaking, so whatever landed the last blow owns the collapse.
+       `causedBy` is null for a third-party collapse (demolition charges,
+       helicopter bombs, dynamite — Session 6), which pays nobody. */
+    this.causedBy = null;
+    this.causeKind = null;              // 'punch' | 'roofDrop' | 'thirdParty'
   }
 
   /** The roof line the monster stands on. Same as Entity.top; named for clarity. */
   get roofY() { return this.top; }
+
+  /** Solid to traversal — true while STANDING *and* while SHAKING. */
+  get standing() { return this.structureState !== BuildingState.RUBBLE; }
+  get isRubble() { return this.structureState === BuildingState.RUBBLE; }
+  get isShaking() { return this.structureState === BuildingState.SHAKING; }
+
+  /** Remaining structure as a fraction of the intact building, 1 → 0. */
+  get structureFraction() {
+    return this.structureHpMax > 0 ? this.structureHp / this.structureHpMax : 0;
+  }
 
   cellAt(col, row) {
     if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return null;
@@ -562,12 +676,144 @@ class Building extends Entity {
     return ((col * 7 + row * 13 + this.index * 5) % CONFIG.buildings.litWindowEvery) === 0;
   }
 
-  update(dt, game) {}          // eslint-disable-line no-unused-vars
+  /* ---- §3.2 destruction ------------------------------------------------ */
+
+  /**
+   * "Punch a wall section ... to rip out that section. Repeated hits destroy
+   * successive sections."
+   *
+   * Returns the break kind for the scorer, or null if this hit didn't change
+   * the section's state: 'partial' when the section first cracks (§6: 25 pts),
+   * 'full' when the punch opens a hole (§6: 225 pts). Removing an
+   * already-holed section returns null — §6 has no row for it.
+   * [INFERRED — 13-inferred-items.md #18.] Session 8's ScoreSystem consumes
+   * this; Session 3 only has to make the damage happen.
+   */
+  damageCell(col, row, amount, byMonster, causeKind) {
+    if (this.isRubble) return null;
+    const cell = this.cellAt(col, row);
+    if (!cell || cell.state === CellState.GONE) return null;
+
+    const applied = Math.min(amount, cell.hp);
+    cell.hp -= applied;
+    this.structureHp -= applied;
+
+    const before = cell.state;
+    cell.state = cellStateForHp(cell.hp, CONFIG.buildings.cellHp);
+
+    // Damage can be the blow that starts the collapse, so test before
+    // returning — the break kind is scored either way.
+    this.checkCollapseTriggers(byMonster, causeKind);
+
+    if (cell.state === before) return null;
+    if (cell.state === CellState.CRACKED) return 'partial';
+    if (cell.state === CellState.HOLE) return 'full';
+    return null;                                   // → GONE, no §6 row
+  }
+
+  /* ---- §3.3 collapse trigger & consequences ---------------------------- */
+
+  /** Every cell of the bottom row removed — "loss of lower support". */
+  bottomRowGone() {
+    const row = this.cells[this.rows - 1];
+    for (let c = 0; c < this.cols; c++) {
+      if (row[c].state !== CellState.GONE) return false;
+    }
+    return true;
+  }
+
+  /**
+   * §3.3: "a building collapses once enough of its structure is gone (a
+   * critical amount of cell damage / loss of lower support)."
+   *
+   * [INFERRED] The exact trigger is undocumented — this is the Phase 1 model
+   * the GDD itself proposes, with the two thresholds picked in CONFIG. See the
+   * rationale block at CONFIG.buildings.collapseStructureFraction.
+   */
+  checkCollapseTriggers(byMonster, causeKind) {
+    if (this.structureState !== BuildingState.STANDING) return;
+    const B = CONFIG.buildings;
+    if (this.structureFraction <= B.collapseStructureFraction ||
+        (B.collapseOnBottomRowGone && this.bottomRowGone())) {
+      this.beginShaking(byMonster, causeKind);
+    }
+  }
+
+  /**
+   * Enter the SHAKING window. Whoever triggered this owns the collapse for
+   * §6 attribution, even if the building takes another hit before it falls —
+   * the blow that doomed it is the one that counts.
+   *
+   * `byMonster` is null for a third-party collapse (Session 6's demolition
+   * charges and bombs), which is exactly what makes that collapse pay nobody.
+   */
+  beginShaking(byMonster, causeKind) {
+    if (this.structureState !== BuildingState.STANDING) return;
+    this.structureState = BuildingState.SHAKING;
+    this.shakeTimer = CONFIG.buildings.shakeDuration;
+    this.causedBy = byMonster || null;
+    this.causeKind = causeKind || 'thirdParty';
+  }
+
+  /**
+   * Collapse: rubble on the street, a dust puff, and fall damage for anyone
+   * who didn't take the hint. §3.3: "if a monster is still clinging to (or
+   * standing on) a building when it collapses, it takes a large chunk of
+   * damage from the fall. The shaking state is the tell."
+   */
+  collapse(game) {
+    if (this.isRubble) return;
+    this.structureState = BuildingState.RUBBLE;
+    this.shakeTimer = 0;
+
+    const monsters = game.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      const m = monsters[i];
+      if (m.attached !== this) continue;         // airborne monsters ride it out
+      m.detach(null, false);                     // → AIR, falls to the street
+      m.vy = 0;
+      m.applyDamage(CONFIG.monster.fallDamage, 'FALL');
+    }
+
+    spawnDustPuffs(game, this);
+
+    // The attribution record §6 needs. Session 8's ScoreSystem reads these and
+    // pays 2,500 only when causedBy is one of its own monsters.
+    game.collapseEvents.push({
+      building: this,
+      buildingIndex: this.index,
+      causedBy: this.causedBy,
+      causeKind: this.causeKind,
+      simTime: game.simTime,
+    });
+  }
+
+  update(dt, game) {
+    if (this.structureState !== BuildingState.SHAKING) return;
+    this.shakeTimer -= dt;
+    if (this.shakeTimer <= 0) {
+      this.shakeTimer = 0;
+      this.collapse(game);
+    }
+  }
+
+  /**
+   * Horizontal judder while SHAKING. Driven off the render alpha as well as
+   * the timer so an 18 Hz shake doesn't alias against the 60 Hz simulation.
+   */
+  shakeOffset(alpha) {
+    if (!this.isShaking) return 0;
+    const B = CONFIG.buildings;
+    const elapsed = B.shakeDuration - this.shakeTimer + (alpha || 0) * CONFIG.loop.fixedDt;
+    return Math.sin(elapsed * B.shakeFrequency * Math.PI * 2) * B.shakeAmplitude;
+  }
 
   /* ---- 09-art-audio: placeholder window-grid art ---------------------- */
-  draw(ctx) {
+  draw(ctx, alpha) {
+    if (this.isRubble) { this.drawRubble(ctx); return; }
+
     const B = CONFIG.buildings;
-    const left = Math.round(this.left);
+    const left = Math.round(this.left + this.shakeOffset(alpha));
     const top = Math.round(this.top);
 
     for (let r = 0; r < this.rows; r++) {
@@ -615,6 +861,87 @@ class Building extends Entity {
       ctx.fillRect(x + 3, y + 3, 2, h - 6);
       ctx.fillRect(x + 3, y + Math.round(h / 2), w - 8, 2);
     }
+  }
+
+  /**
+   * §3.3 rubble mound. Scenery only in Phase 1 — it neither blocks the street
+   * nor supports anything, so nothing in traversal has to know it exists (see
+   * `standing`). The ragged top is a fixed pattern, not RNG, so a reload draws
+   * the same street.
+   */
+  drawRubble(ctx) {
+    const B = CONFIG.buildings;
+    const left = Math.round(this.left);
+    const base = Math.round(CONFIG.world.groundY);
+
+    ctx.fillStyle = B.rubbleColor;
+    ctx.fillRect(left, base - B.rubbleHeight, this.w, B.rubbleHeight);
+
+    ctx.fillStyle = B.rubbleShadeColor;
+    for (let c = 0; c < this.cols; c++) {
+      const bump = ((c * 5 + this.index * 3) % 3) + 1;
+      ctx.fillRect(left + c * B.cellWidth, base - B.rubbleHeight - bump, B.cellWidth, bump);
+    }
+
+    // A couple of surviving slabs so the mound reads as a wrecked building
+    // rather than a kerb.
+    ctx.fillStyle = this.palette.wallShade;
+    for (let c = 0; c < this.cols; c += 2) {
+      const slabW = Math.round(B.cellWidth / 2);
+      ctx.fillRect(left + c * B.cellWidth + 3, base - B.rubbleHeight + 2, slabW, 3);
+    }
+  }
+}
+
+
+/* ==========================================================================
+   09-art-audio — dust puff (02-movement-destruction §3.3)
+
+   "collapses into a rubble pile with a dust puff." Purely cosmetic: no
+   collision, no gameplay effect, despawns on its own. Spread and rise are a
+   fixed pattern rather than RNG so a collapse looks identical on every run,
+   which also keeps the headless tests deterministic.
+   ========================================================================== */
+class DustPuff extends Entity {
+  constructor(x, y, vx, vy) {
+    super(x, y, 0, 0);
+    this.vx = vx;
+    this.vy = vy;
+    this.age = 0;
+  }
+
+  update(dt) {
+    const D = CONFIG.buildings.dust;
+    this.age += dt;
+    if (this.age >= D.life) { this.alive = false; return; }
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+  }
+
+  draw(ctx, alpha) {
+    const D = CONFIG.buildings.dust;
+    const t = clamp(this.age / D.life, 0, 1);
+    const size = Math.round(D.startSize + D.growth * t);
+    ctx.fillStyle = 'rgba(' + D.color + ',' + (D.maxAlpha * (1 - t)).toFixed(3) + ')';
+    ctx.fillRect(
+      Math.round(this.renderX(alpha) - size / 2),
+      Math.round(this.renderY(alpha) - size / 2),
+      size, size
+    );
+  }
+}
+
+function spawnDustPuffs(game, building) {
+  const D = CONFIG.buildings.dust;
+  for (let i = 0; i < D.count; i++) {
+    const t = (i + 0.5) / D.count;                  // 0..1 across the frontage
+    const jitter = (((i * 37 + building.index * 11) % 17) / 16) - 0.5;
+    game.entities.add(new DustPuff(
+      building.left + building.w * t,
+      CONFIG.world.groundY,
+      (t - 0.5) * 2 * D.spreadSpeed,                // blows outward from centre
+      -D.riseSpeed * (1 + jitter)
+    ));
   }
 }
 
@@ -665,6 +992,7 @@ class Monster extends Entity {
     this.stance = Stance.GROUND;
     this.punchTimer = 0;             // counts down through the punch animation
     this.punchCooldown = 0;
+    this.punchHasHit = false;        // one connection per punch, at full reach
     this.walkPhase = 0;              // 0..1 through the walk cycle
     this.climbPhase = 0;             // 0..1 through the climb cycle
     this.animState = 'idle';
@@ -675,6 +1003,12 @@ class Monster extends Entity {
     this.attached = null;
     this.grabIgnore = null;
     this.grabLockTimer = 0;
+
+    /* 03-eating-health §4.1 — Session 4 replaces this with a real energy bar.
+       Session 3 needs somewhere for fall damage to land so the §3.3 path is
+       observable and testable; see applyDamage. */
+    this.damageTaken = 0;
+    this.lastDamageSource = null;
   }
 
   get isPunching() { return this.punchTimer > 0; }
@@ -710,6 +1044,55 @@ class Monster extends Entity {
     };
   }
 
+  /**
+   * 02-movement-destruction §3.2 — the area a punch can rip a wall section
+   * out of. Same vertical band as getPunchBox, but it starts at the monster's
+   * own centre rather than at its leading edge.
+   *
+   * [INFERRED — 13-inferred-items.md #17] The GDD doesn't say which cell a
+   * punch lands on. Reaching back to the centre is what makes the outermost
+   * column of a building breakable from a face: a clinging monster is pinned
+   * flush inside the frontage (Session 2), so at the right-hand edge a purely
+   * forward reach would punch past the building entirely and the edge column
+   * could never be destroyed by climbing. Facing still decides which way the
+   * punch chews.
+   */
+  punchTargetRect() {
+    const M = CONFIG.monster;
+    const front = this.w / 2 + M.punchReach * this.punchExtension;
+    return {
+      x: this.facing > 0 ? this.x : this.x - front,
+      y: this.top + M.punchBoxOffsetY,
+      w: front,
+      h: M.punchBoxHeight,
+    };
+  }
+
+  /**
+   * §3.2 — land one punch on one wall section. Works from the street and from
+   * a face; from a roof the band sits entirely above the roof line and hits
+   * nothing, which needs no special case.
+   */
+  resolvePunch(game) {
+    const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
+    if (!target) return;
+    // The return value is the §6 break kind ('partial' / 'full'). Nothing
+    // reads it until Session 8 wires up the ScoreSystem.
+    return target.building.damageCell(
+      target.col, target.row, CONFIG.monster.punchDamage, this, 'punch');
+  }
+
+  /**
+   * 03-eating-health §4.1 — the single funnel every damage source routes
+   * through. Session 4 replaces the body with real energy bookkeeping and the
+   * defeat check; the signature is the part that has to stay put. Session 3
+   * calls it from exactly one place: collapse fall damage (§3.3).
+   */
+  applyDamage(amount, source) {
+    this.damageTaken += amount;
+    this.lastDamageSource = source;
+  }
+
   update(dt, game) {
     const M = CONFIG.monster;
     const input = game.input.getPlayer(this.playerIndex);
@@ -737,6 +1120,7 @@ class Monster extends Entity {
     if (input.punchPressed && !this.isPunching && this.punchCooldown <= 0) {
       if (dir !== 0) this.facing = dir;
       this.punchTimer = M.punchDuration;
+      this.punchHasHit = false;
     }
 
     /* [INFERRED] Punching roots the monster on any surface — street, face or
@@ -750,6 +1134,17 @@ class Monster extends Entity {
       case Stance.AIR:    this.updateAir(dt, game, input, dir); break;
       case Stance.CLING:  this.updateCling(dt, game, input, dir, vdir, rooted); break;
       case Stance.ROOF:   this.updateRoof(dt, game, input, dir, rooted); break;
+    }
+
+    /* --- §3.2 the fist connects ----------------------------------------
+       Resolved after the stance handler so the punch lands from the position
+       the monster actually ends the tick at. Contact is the moment the fist is
+       fully out (punchExtendFraction), and punchHasHit makes it exactly once
+       per punch however many ticks the animation spans.                    */
+    if (this.isPunching && !this.punchHasHit &&
+        this.punchProgress >= M.punchExtendFraction) {
+      this.punchHasHit = true;
+      this.resolvePunch(game);
     }
 
     /* --- animation ------------------------------------------------------ */
@@ -862,6 +1257,16 @@ class Monster extends Entity {
         this.vy = 0;
         this.stance = Stance.ROOF;
         this.attached = roof;
+
+        /* §3.2 roof-drop collapse: "weaken a building, then jump onto its
+           roof — the monster's weight finishes it off and it collapses."
+           Only a *landing* does it, so walking onto a roof off a face is
+           safe; and it leaves the monster standing on a shaking building,
+           which is the intended skill check — jump again or eat the fall.
+           [INFERRED] threshold — CONFIG.buildings.roofDropStructureFraction. */
+        if (roof.structureFraction <= CONFIG.buildings.roofDropStructureFraction) {
+          roof.beginShaking(this, 'roofDrop');
+        }
         return;
       }
     }
@@ -880,9 +1285,10 @@ class Monster extends Entity {
     const W = CONFIG.world;
     const b = this.attached;
 
-    // Defensive: a building that stops existing (Session 3 collapse) drops
-    // whoever was on it rather than leaving them attached to nothing.
-    if (!b || !b.alive) { this.detach(null, false); return; }
+    // A building that has come down drops whoever was on it. Building.collapse
+    // already detaches and applies fall damage (§3.3); this is the safety net
+    // for any other path that could turn a building to rubble mid-tick.
+    if (!b || !b.standing) { this.detach(null, false); return; }
 
     if (input.jumpPressed && !this.isPunching) {
       this.vy = -M.jumpSpeed;
@@ -935,7 +1341,7 @@ class Monster extends Entity {
     const M = CONFIG.monster;
     const b = this.attached;
 
-    if (!b || !b.alive) { this.detach(null, false); return; }
+    if (!b || !b.standing) { this.detach(null, false); return; }
 
     this.y = b.top;
     this.vy = 0;
@@ -1128,9 +1534,24 @@ function drawDebug(game) {
       monster.type.name + '  x ' + monster.x.toFixed(1) + '  y ' + monster.y.toFixed(1) +
       '  vx ' + monster.vx.toFixed(0) + '  vy ' + monster.vy.toFixed(0) +
       '  ' + monster.stance + '/' + monster.animState + '  face ' + (monster.facing > 0 ? 'R' : 'L') +
-      '  ON ' + (monster.attached ? 'BLDG' + monster.attached.index : '—')
+      '  ON ' + (monster.attached ? 'BLDG' + monster.attached.index : '—') +
+      '  DMG ' + monster.damageTaken + (monster.lastDamageSource ? '/' + monster.lastDamageSource : '')
     );
     lines.push(game.crossing.readout);
+  }
+  // Session 3 readout: per-building structure %, state, and who owns the
+  // collapse. Goes away with the rest of the debug strip in Session 8.
+  if (game.buildings.length) {
+    const parts = [];
+    for (const b of game.buildings) {
+      const tag = b.isRubble ? 'RUB' : (b.isShaking ? 'SHK' : Math.round(b.structureFraction * 100) + '%');
+      parts.push('B' + b.index + ' ' + tag);
+    }
+    const owned = game.collapseEvents.map(function (e) {
+      return 'B' + e.buildingIndex + '←' + (e.causedBy ? e.causedBy.type.initial + '/' + e.causeKind : 'NONE');
+    });
+    lines.push(parts.join('  ') + (game.dayCleared() ? '   DAY CLEAR' : ''));
+    if (owned.length) lines.push('COLLAPSE ' + owned.join('  '));
   }
   lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /)');
   for (let i = 0; i < lines.length; i++) {
@@ -1193,6 +1614,12 @@ class Game {
     this.input = new InputManager(CONFIG.players.slots);
     this.entities = new EntityManager();
     this.buildings = [];          // query list for traversal; see spawnBuildings
+
+    /* 02 §3.3 / 05-scoring §6 — one record per collapse, in the order they
+       happened, each carrying the monster that caused it (or null for a
+       third-party collapse). This is the attribution the 2,500-point bonus
+       depends on; Session 8's ScoreSystem is what drains it. Reset per day. */
+    this.collapseEvents = [];
 
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
@@ -1278,8 +1705,14 @@ class Game {
   /** Buildings first so monsters draw in front of them (the street is a lane). */
   startDay() {
     this.entities.clear();
+    this.collapseEvents = [];
     this.spawnBuildings();
     this.spawnMonsters();
+  }
+
+  /** §7 day clear: every building on the board is rubble. Session 9 acts on it. */
+  dayCleared() {
+    return this.buildings.length > 0 && this.buildings.every(function (b) { return b.isRubble; });
   }
 
   /**
@@ -1299,7 +1732,7 @@ class Game {
     let bestOverlap = CONFIG.monster.grabMinOverlap;
     for (let i = 0; i < this.buildings.length; i++) {
       const b = this.buildings[i];
-      if (!b.alive || b === ignore) continue;
+      if (!b.standing || b === ignore) continue;
       if (monster.y <= b.top) continue;
       const overlap = b.overlapWidth(monster.left, monster.right);
       if (overlap >= bestOverlap) { best = b; bestOverlap = overlap; }
@@ -1315,11 +1748,57 @@ class Game {
   roofLandingAt(x, prevFeetY, feetY) {
     for (let i = 0; i < this.buildings.length; i++) {
       const b = this.buildings[i];
-      if (!b.alive) continue;
+      if (!b.standing) continue;
       if (x < b.left || x > b.right) continue;
       if (prevFeetY <= b.top && feetY >= b.top) return b;
     }
     return null;
+  }
+
+  /**
+   * 02 §3.2 — the wall section a punch rips out. Takes the punch's target rect
+   * (Monster.punchTargetRect) and returns { building, col, row } or null.
+   *
+   * The cell picked is the still-standing cell the rect covers the most of,
+   * tie-broken toward `facing`. Already-GONE sections are skipped rather than
+   * absorbing the punch, which is what makes "repeated hits destroy successive
+   * sections" (§3.2) work — a punch thrown at a hole chews into the section
+   * behind it instead of hitting air. Buildings never overlap horizontally, so
+   * at most one is ever a candidate.
+   */
+  cellTargetFor(rect, facing) {
+    const B = CONFIG.buildings;
+    const dir = facing >= 0 ? 1 : -1;
+    let best = null, bestArea = 0, bestX = 0;
+
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (!b.standing) continue;
+      if (rect.x + rect.w <= b.left || rect.x >= b.right) continue;
+      if (rect.y + rect.h <= b.top || rect.y >= b.bottom) continue;
+
+      const c0 = clamp(Math.floor((rect.x - b.left) / B.cellWidth), 0, b.cols - 1);
+      const c1 = clamp(Math.floor((rect.x + rect.w - b.left) / B.cellWidth), 0, b.cols - 1);
+      const r0 = clamp(Math.floor((rect.y - b.top) / B.cellHeight), 0, b.rows - 1);
+      const r1 = clamp(Math.floor((rect.y + rect.h - b.top) / B.cellHeight), 0, b.rows - 1);
+
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          if (b.cells[r][c].state === CellState.GONE) continue;
+          const cr = b.cellRect(c, r);
+          const ox = Math.min(rect.x + rect.w, cr.x + cr.w) - Math.max(rect.x, cr.x);
+          const oy = Math.min(rect.y + rect.h, cr.y + cr.h) - Math.max(rect.y, cr.y);
+          if (ox <= 0 || oy <= 0) continue;
+
+          const area = ox * oy;
+          const cx = cr.x + cr.w / 2;
+          const better = area > bestArea + 1e-6 ||
+            (best !== null && Math.abs(area - bestArea) <= 1e-6 && cx * dir > bestX * dir);
+          if (better) { best = { building: b, col: c, row: r }; bestArea = area; bestX = cx; }
+        }
+      }
+    }
+    return best;
   }
 }
 
@@ -1454,9 +1933,15 @@ Game.prototype.handlers = {
       game.entities.draw(ctx, alpha);
 
       if (CONFIG.debug.showPunchBox) {
-        ctx.fillStyle = CONFIG.debug.punchBoxColor;
         for (const monster of game.entities.ofType(Monster)) {
+          if (!monster.isPunching) continue;
+          // The wider rect is what actually picks the cell (§3.2); the yellow
+          // box is just the fist the art draws.
+          const target = monster.punchTargetRect();
+          ctx.fillStyle = CONFIG.debug.punchTargetColor;
+          ctx.fillRect(target.x, target.y, target.w, target.h);
           const box = monster.getPunchBox();
+          ctx.fillStyle = CONFIG.debug.punchBoxColor;
           if (box) ctx.fillRect(box.x, box.y, box.w, box.h);
         }
       }
@@ -1544,7 +2029,7 @@ function boot() {
   // Debug handle — inspect state from the console, and drive headless tests.
   window.RAMPAGE = {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
-    Building, CellState,
+    Building, CellState, BuildingState, DustPuff, cellStateForHp,
   };
   return game;
 }

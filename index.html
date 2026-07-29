@@ -359,30 +359,26 @@ const CONFIG = {
      windows/wall sections)." Cells carry state + HP from Session 2 onward so
      Session 3 only has to add the damage path, not the data model.
 
-     dayLayout is hardcoded on purpose — SESSION-PLAN says data-driven days
-     (LevelData) arrive in Session 9. It lays buildings left to right from
-     startX, each followed by gapAfter px of street.
+     Session 9 moved the day's *building list* out of here and into
+     CONFIG.levels (06-levels-progression §7): a city's cols/rows/palette are
+     now one data row in `CONFIG.levels.days`, and LevelData.layoutRow works
+     out the x positions and inter-building gaps from the street span, so
+     adding a city is content-only and never needs a code change. What stays
+     here is the cell geometry every day shares.
 
-     HEIGHT CONSTRAINT: every building must be taller than the monster's jump
-     apex (~40 px at the Session 1 values) or a monster could jump off the
-     street straight onto a roof — see the note in Monster.updateAir. The
-     shortest entry below is 5 rows = 110 px, well clear.                    */
+     HEIGHT CONSTRAINT (unchanged, now enforced in code rather than by hand):
+     every building must be taller than the monster's jump apex (~40 px at the
+     Session 1 values) or a monster could jump off the street straight onto a
+     roof — see the note in Monster.updateAir. `minRows` is that floor, and
+     LevelData.layoutRow clamps every authored row up to it so a bad data row
+     can't silently break traversal.                                          */
   buildings: {
     cellWidth: 22,
     cellHeight: 22,
     cellHp: 3,                // hits to take a cell INTACT→CRACKED→HOLE→GONE
                               // [INFERRED] — the damage curve is spread evenly
                               // across the states, so this stays tunable
-    startX: 6,                // left edge of the first building
-    // cols × rows × palette, laid out across the street. 5 buildings, total
-    // 396 px of frontage + 104 px of gaps = the full 6..506 playable span.
-    dayLayout: [
-      { cols: 3, rows: 7, palette: 0, gapAfter: 24 },
-      { cols: 4, rows: 5, palette: 1, gapAfter: 30 },
-      { cols: 3, rows: 9, palette: 2, gapAfter: 24 },
-      { cols: 5, rows: 6, palette: 0, gapAfter: 26 },
-      { cols: 3, rows: 8, palette: 1, gapAfter: 0  },
-    ],
+    minRows: 3,               // 3 × 22 = 66 px, comfortably over the jump apex
     /* -- Collapse (02-movement-destruction.md §3.3) ----------------------
        [INFERRED — 13-inferred-items.md #5] The GDD is explicit that the exact
        trigger is undocumented and gives the Phase 1 model: "when total
@@ -650,13 +646,33 @@ const CONFIG = {
     maxParatroopers: 1,             // concurrent
     lightningInterval: 13.0,        // s between lightning-cloud spawn rolls — new Session 7
     maxLightning: 1,                // concurrent
+    /* Level features (06-levels-progression §7.3) — new in Session 9. Same
+       cadence shape as the military roster, but gated on the *day's* feature
+       flags rather than always running. Deliberately NOT scaled by the
+       difficulty scalar: a trolley timetable isn't an escalation axis. */
+    trainInterval: 8.0,             // s between train spawn rolls
+    maxTrains: 1,                   // concurrent
+    boaterInterval: 6.5,            // s between boater spawn rolls
+    maxBoaters: 2,                  // concurrent
   },
 
-  /* ---- Difficulty escalation (04-military-hazards §5.2) — new in Session 7
+  /* ---- Difficulty escalation (04-military-hazards §5.2) — Session 7, now
+     driven by the day index (Session 9) ----------------------------------
      "Difficulty ramps across days along five axes." Axis 1 ("more
-     buildings") is Session 9's job (CONFIG.buildings.dayLayout is still
-     hardcoded) — everything else routes through this one manual scalar
-     until the real day/level system exists to drive it automatically:
+     buildings") is now real: a day's building count/heights come from its
+     own CONFIG.levels row. Everything else routes through one scalar —
+     but as of Session 9 that scalar is computed per day by
+     Game.difficultyScalar() rather than typed in here:
+
+         scalar = day.difficulty                 (per-day, from LevelData —
+                                                  defaults to a ramp across
+                                                  the 128 days of a pass)
+                + pass * passScalarStep          (§7.2 "later passes escalate
+                                                  — more lightning/police")
+                + CONFIG.difficulty.scalar       (the Session 7 manual knob,
+                                                  now a debug *offset*)
+
+     The axes each formula below drives are unchanged from Session 7:
        axis 2 — Game.scaledInterval/scaledMax shrink SpawnDirector cadences
                 and raise concurrent-unit caps as the scalar rises.
        axis 2/5 — Game.policeChance() shifts new ground-vehicle spawns from
@@ -667,13 +683,19 @@ const CONFIG = {
        axis 4/5 — the same scaledInterval/scaledMax pair covers the lightning
                   cadence/cap too, so "later loops ... more lightning" is the
                   same knob as axis 2's "more ground units."
-     [INFERRED — 13-inferred-items.md #41: the GDD confirms each axis's
-     direction, never a rate. `scalar` defaults to 0, which reduces every
-     formula below to Session 6's original flat cadence — nothing scales
-     until something (a debug tweak today, Session 9's day index later)
-     raises it.]                                                          */
+     [INFERRED — 13-inferred-items.md #36/#43: the GDD confirms each axis's
+     direction, never a rate. On day 1 of pass 1 with the manual offset at 0
+     every formula below is still the identity, i.e. Session 6's original
+     flat cadence — the ramp only bites as the day index climbs.]         */
   difficulty: {
-    scalar: 0,
+    scalar: 0,                // manual debug OFFSET added on top of the
+                              // day-derived scalar; 0 = pure day-driven
+    dayScalarStep: 0.06,      // scalar points added per day within a pass —
+                              // day 1 → 0.00, day 50 → 2.94, day 128 → 7.62
+    passScalarStep: 2,        // §7.2 "later passes escalate": +2 scalar per
+                              // completed 128-day pass, which is +1 to every
+                              // concurrent-unit cap (incl. lightning) and
+                              // +0.16 police share, per pass
     cadenceScale: 0.15,       // fractional cadence shrink per scalar point
     maxUnitGrowth: 0.5,       // +1 concurrent-unit cap per 2 scalar points
     policeShareBase: 0.25,    // fraction of ground-vehicle spawns that are
@@ -692,15 +714,16 @@ const CONFIG = {
      entity/feature they score — the same "defined but unreachable" pattern
      `CONFIG.health.damage` used in Session 4 for sources that hadn't arrived
      yet (a name and number ready for whichever session adds the thing that
-     fires it): `boater`/`train` explicitly wait on Session 9's level
-     features per 05-scoring.md itself; `carParked`/`carMovingSlow`/
-     `carParkedTakeoff` and `lootBag` were never built as entities in any
-     prior session; `lightBulbOff`/`televisionOff`/`neonSign` want an "off"
-     (safe-to-grab) pickup variant that 03-eating-health.md §4.3 calls for
-     explicitly ("when off, TV/light bulb/neon can instead be knocked out
-     for points") but Sessions 4/6 only ever implemented the lit/dangerous
-     one; `megaVitaminBonus` waits on Session 9's 128-day loop counter. See
-     STATUS.md's Session 8 notes and 13-inferred-items.md #41 for the list.
+     fires it). Session 9 closed three of them — `train`, `boater` and
+     `megaVitaminBonus` all have real call sites now that the level features
+     and the 128-day counter exist. Six rows are still unreachable:
+     `carParked`/`carMovingSlow`/`carParkedTakeoff` and `lootBag` were never
+     built as entities in any prior session; `lightBulbOff`/`televisionOff`/
+     `neonSign` want an "off" (safe-to-grab) pickup variant that
+     03-eating-health.md §4.3 calls for explicitly ("when off, TV/light bulb/
+     neon can instead be knocked out for points") but Sessions 4/6 only ever
+     implemented the lit/dangerous one. See STATUS.md's Session 8/9 notes
+     and 13-inferred-items.md #42.
 
      Two rows are a *range* in the source table rather than one number
      (`designatedVictimHold`, `safe`) — resolved via `Game.nextScoreFrac`,
@@ -722,8 +745,8 @@ const CONFIG = {
     neonSign: 1000,                    // unreachable — only the lit/dangerous NEON_SIGN exists
     lightBulbOff: 500,                 // unreachable — only the lit/dangerous LIT_BULB exists
     televisionOff: 500,                // unreachable — only the lit/dangerous TV_ON exists
-    train: 500,                        // unreachable — level feature, Session 9
-    boater: 750,                       // unreachable — level feature, Session 9
+    train: 500,                        // §6 says "per hit" — see Train.punch
+    boater: 750,                       // level feature — see Boater.punch
     helicopter: 750,
     photographer: 750,
     policeCar: 750,
@@ -733,7 +756,247 @@ const CONFIG = {
     carParked: 100,                    // unreachable — no Car entity was ever built
     nationalGuardsman: 50,
     paratrooper: 50,
-    megaVitaminBonus: 5000,            // unreachable — Session 9's 128-day loop counter
+    megaVitaminBonus: 5000,            // §7.2 milestone — see Game.awardMegaVitamin
+  },
+
+  /* ---- Days, cities and progression (06-levels-progression.md §7) -------
+     "Each day = one city screen with a fixed number of buildings to level
+     (2-6). Clear all buildings → the day ends → a brief newspaper-headline
+     interstitial → next day." 128 unique days, run six times over for 768,
+     then a reset to day 1.
+
+     THIS TABLE IS THE WHOLE DAY SYSTEM'S CONTENT. `days` below is a plain
+     data array — adding a city is one more row and nothing else: no code
+     change, no new branch, no layout arithmetic by hand. `LevelData` (the
+     06-levels-progression section further down) resolves a row into a
+     playable day, filling in anything the row leaves out from `defaults`.
+
+     A row's fields, all optional except `day`:
+       day        1-128, the day's slot in the pass. Rows may be sparse and
+                  in any order; LevelData indexes them by this number.
+       city       display name for the interstitial.
+       buildings  [{ cols, rows, palette }] — 2-6 of them. x positions and
+                  gaps are computed (LevelData.layoutRow), never authored.
+                  Omit it and the day gets a deterministic procedural layout
+                  (LevelData.proceduralBuildings) so an un-authored city is
+                  still playable. Fit rule for an author: total cols × 22 px
+                  must be under the street span (500 px, less the river on a
+                  riverway day) — `rows` is clamped up to buildings.minRows.
+       features   { riverway, bridge, pier, train, boater } — §7.3 level
+                  dressing. riverway/bridge/pier are { x, w } spans in px;
+                  train/boater are booleans. A riverway shortens the span
+                  the buildings are laid out across (LevelData.spanFor).
+       enemies    which of the §5.1 roster the SpawnDirector may spawn today.
+       difficulty explicit §5.2 scalar override; omitted, it ramps with the
+                  day number (CONFIG.difficulty.dayScalarStep).
+
+     [INFERRED — 13-inferred-items.md #9] Only two entries in the arcade's
+     128-city list are confirmed by our sources: Peoria IL is day 1 and Plano
+     IL is day 128 (the 2-building in-joke). Every other city name below is a
+     placeholder chosen to fill the opening slice — NOT the arcade's real
+     ordered list, which none of the sources reproduce. Same for every
+     per-day building count/height and feature assignment.                  */
+  levels: {
+    daysPerPass: 128,         // §7.2 — 128 unique days per pass [FAITHFUL]
+    passes: 6,                // §7.2 — six passes = 768 days, then reset [FAITHFUL]
+
+    /* Interstitial timing (§7.1 "a brief newspaper-headline interstitial").
+       [INFERRED] — no duration is documented. Both screens can be skipped
+       with a start press, so these are a ceiling, not a wait.              */
+    clearHold: 4.0,           // s the headline interstitial holds
+    introHold: 2.4,           // s the "next city" card holds
+    maxGap: 60,               // px — cap on the computed gap between two
+                              // buildings, so a 2-building day doesn't put
+                              // one at each screen edge (LevelData.layoutRow)
+    riverMargin: 8,           // px of dry street between the last building
+                              // and the near bank of a riverway
+
+    /* §7.1's newspaper interstitial. Original comedic headlines in the
+       arcade's spirit rather than its (copyrighted) copy — the GDD asks for
+       exactly this. Picked by day index, deterministically. */
+    headlines: [
+      'MONSTER FLATTENS DOWNTOWN — MAYOR "MILDLY CONCERNED"',
+      'CITY COUNCIL VOTES 7-0 TO STOP HAVING BUILDINGS',
+      'GIANT LIZARD EATS LANDMARK, ASKS FOR SECONDS',
+      'LOCAL SKYLINE IS NOW A LOCAL FLATLINE',
+      'ARMY DEPLOYS EVERYTHING; MONSTER DEPLOYS FIST',
+      'INSURANCE ADJUSTER RESIGNS MID-SENTENCE',
+      'FORECAST: CLOUDY, WITH A CHANCE OF RUBBLE',
+      'TOURISM BOARD CALLS PANIC "RECORD FOOT TRAFFIC"',
+      'APE SEEN LEAVING TOWN; TOWN SEEN LEAVING TOWN',
+      'CHAMBER OF COMMERCE UNVEILS BOLD NEW VACANT LOT',
+    ],
+
+    /* Anything a `days` row leaves out. Merged field-by-field, so a row can
+       override just `enemies.lightning` and inherit the rest. */
+    defaults: {
+      buildings: null,        // null → LevelData.proceduralBuildings(day)
+      difficulty: null,       // null → day-number ramp
+      features: { riverway: null, bridge: null, pier: null, train: false, boater: false },
+      enemies: {
+        guardsmen: true, helicopters: true,   // §5.1 "present every day"
+        vehicles: true, paratroopers: true, lightning: true,
+      },
+    },
+
+    /* -- The authored slice (§7.2 / 13-inferred-items.md #9). The opening
+       days plus Plano at 128; everything between is either an "empty row"
+       (a name and nothing else — days 7-9 below, which play on defaults and
+       a procedural layout) or absent entirely, which resolves identically.
+       Fill them in as content, one row at a time.                         */
+    days: [
+      // Day 1 — Peoria, the confirmed arcade opener. Deliberately the
+      // gentlest board: five buildings, no level features, and only the two
+      // units §5.1 says are present every day.
+      { day: 1, city: 'PEORIA, IL',
+        buildings: [
+          { cols: 3, rows: 7, palette: 0 },
+          { cols: 4, rows: 5, palette: 1 },
+          { cols: 3, rows: 9, palette: 2 },
+          { cols: 5, rows: 6, palette: 0 },
+          { cols: 3, rows: 8, palette: 1 },
+        ],
+        enemies: { vehicles: false, paratroopers: false, lightning: false } },
+
+      // Day 2 — ground units arrive.
+      { day: 2, city: 'DAVENPORT, IA',
+        buildings: [
+          { cols: 4, rows: 6, palette: 1 },
+          { cols: 3, rows: 8, palette: 2 },
+          { cols: 5, rows: 5, palette: 0 },
+          { cols: 4, rows: 7, palette: 1 },
+        ],
+        enemies: { paratroopers: false, lightning: false } },
+
+      // Day 3 — §7.3 train/trolley.
+      { day: 3, city: 'ROCK ISLAND, IL',
+        buildings: [
+          { cols: 3, rows: 6, palette: 2 },
+          { cols: 4, rows: 9, palette: 0 },
+          { cols: 3, rows: 5, palette: 1 },
+          { cols: 5, rows: 7, palette: 2 },
+          { cols: 3, rows: 6, palette: 0 },
+        ],
+        features: { train: true },
+        enemies: { paratroopers: false, lightning: false } },
+
+      // Day 4 — §7.3 riverway + bridge. The river takes the right quarter of
+      // the street, so the buildings lay out across what's left.
+      { day: 4, city: 'GALESBURG, IL',
+        buildings: [
+          { cols: 4, rows: 7, palette: 0 },
+          { cols: 3, rows: 9, palette: 1 },
+          { cols: 4, rows: 6, palette: 2 },
+        ],
+        features: { riverway: { x: 372, w: 134 }, bridge: { x: 398, w: 76 } },
+        enemies: { lightning: false } },
+
+      // Day 5 — §7.3 riverway + pier + boater.
+      { day: 5, city: 'QUINCY, IL',
+        buildings: [
+          { cols: 3, rows: 8, palette: 1 },
+          { cols: 5, rows: 6, palette: 2 },
+          { cols: 3, rows: 7, palette: 0 },
+        ],
+        features: { riverway: { x: 356, w: 150 }, pier: { x: 356, w: 46 }, boater: true },
+        enemies: { lightning: false } },
+
+      // Day 6 — the full roster, and the widest board of the opening slice.
+      { day: 6, city: 'SPRINGFIELD, IL',
+        buildings: [
+          { cols: 3, rows: 7, palette: 2 },
+          { cols: 3, rows: 9, palette: 0 },
+          { cols: 4, rows: 6, palette: 1 },
+          { cols: 3, rows: 8, palette: 2 },
+          { cols: 4, rows: 5, palette: 0 },
+        ],
+        features: { train: true } },
+
+      // Empty rows — the shape a city takes before anyone authors it. Name
+      // only: procedural layout, default features, full enemy roster,
+      // day-number difficulty. Playable today, replaceable in one edit.
+      { day: 7, city: 'DECATUR, IL' },
+      { day: 8, city: 'BLOOMINGTON, IL' },
+      { day: 9, city: 'CHAMPAIGN, IL' },
+
+      // Day 128 — Plano, the confirmed arcade closer and "the only day with
+      // just 2 buildings" (§7.2). Clearing it is what fires the mega-vitamin
+      // milestone; days 10-127 resolve procedurally until authored.
+      { day: 128, city: 'PLANO, IL',
+        buildings: [
+          { cols: 4, rows: 8, palette: 0 },
+          { cols: 5, rows: 9, palette: 2 },
+        ] },
+    ],
+  },
+
+  /* ---- Level features (06-levels-progression.md §7.3) -------------------
+     "Days can include set-piece features: bridge, riverway (water hazard —
+     going under drains health), piers + boater, and train/trolley."
+
+     [INFERRED throughout — 13-inferred-items.md #44] §7.3 names the features
+     and one rule about them (water drains health) and nothing else: no
+     geometry, no speeds, no interaction rules. What's below is the cheapest
+     reading that makes each one a real, reachable mechanic:
+       riverway — a band of water across the street. A monster standing in
+         it takes CONFIG.health.damage.underwaterPerSecond continuously (the
+         Session 4 placeholder that has been waiting for this feature). The
+         street is drawn side-on, so "in the river" is the same feet line as
+         the street — an art-pass wade overlay is Session 11's problem.
+       bridge — a deck over part of the riverway. Standing on the deck's
+         span is dry: the bridge is the safe way across.
+       pier — scenery at the near bank, so the boater has somewhere to be.
+       train — crosses the street on a schedule; §6 scores it "per hit," so
+         a punch scores every time and it takes `hitsToDestroy` to wreck.
+       boater — drifts along the river; one punch destroys it for §6's 750.
+     Neither train nor boater damages a monster on contact — nothing in the
+     GDD says they do, and §6 lists both as scoring targets, not threats. */
+  features: {
+    riverway: {
+      waterColor: '#1b3a5b',
+      surfaceColor: '#2f6390',
+      foamColor: '#8fc0dd',
+      rippleWidth: 9,
+      rippleGap: 13,
+      rippleHeight: 2,
+      rippleY: 10,            // px below the street line
+    },
+    bridge: {
+      deckHeight: 6,          // drawn from the street line down, so feet land
+                              // on the deck at exactly CONFIG.world.groundY
+      deckColor: '#6b6f80',
+      trussColor: '#878da0',
+      pileColor: '#4a4e5c',
+      pileWidth: 4,
+      trussHeight: 12,        // decorative arch above the deck
+    },
+    pier: {
+      deckHeight: 5,
+      deckColor: '#7a6248',
+      pileColor: '#4e3f2e',
+      pileWidth: 3,
+      pileEvery: 14,
+      pileDepth: 18,
+    },
+    train: {
+      width: 58,
+      height: 22,             // tall enough to sit inside the punch band —
+                              // same reasoning as CONFIG.enemies.vehicle
+      speed: 104,             // px/s across the street
+      hitsToDestroy: 3,       // §6 scores "per hit"; this is how many it takes
+      bodyColor: '#7a4436',
+      trimColor: '#3a2620',
+      windowColor: '#e8d97a',
+      wheelColor: '#2a2028',
+    },
+    boater: {
+      width: 24,
+      height: 18,
+      speed: 30,              // px/s drifting along the river
+      hullColor: '#8a6a3a',
+      personColor: '#c9a876',
+      oarColor: '#5c4428',
+    },
   },
 
   /* ---- Monster types (01-monsters.md §2.1, §2.3) -----------------------
@@ -843,6 +1106,18 @@ const CONFIG = {
     hudBarBgColor: '#20242f',
     hudBarColor: '#5fbf6a',
     hudBarLowColor: '#c0392b',
+    // Day interstitial + continue prompt + mega-vitamin flourish (§9's
+    // remaining UI states, all new in Session 9).
+    paperColor: '#d8d3c4',
+    paperShadeColor: '#b8b2a2',
+    paperInkColor: '#1a1a1c',
+    paperMutedInkColor: '#55524c',
+    paperMargin: 40,          // px inset of the newspaper page from the screen
+    paperTop: 56,
+    paperHeight: 200,
+    paperRuleInset: 8,
+    continueColor: '#e8563f',
+    bonusColor: '#5fbf6a',
     // Screen text positions. Absolute y for full-screen text; card-relative
     // offsets for anything drawn inside a character-select card.
     layout: {
@@ -858,8 +1133,28 @@ const CONFIG = {
       cardBlurbOffsetY: 98,
       cardFlavorOffsetY: 110,
       cardTagOffsetY: 130,
-      stubTitleOffsetY: -12,
-      stubNoteOffsetY: 8,
+      // Day-clear newspaper (offsets are from the top of the paper block).
+      paperMastheadOffsetY: 12,
+      paperRuleOffsetY: 28,
+      paperHeadlineOffsetY: 44,
+      paperDeckOffsetY: 74,
+      paperBonusOffsetY: 104,
+      paperScoreOffsetY: 130,
+      paperNextOffsetY: 162,
+      paperSkipY: 300,
+      // Day intro card.
+      introDayY: 130,
+      introCityY: 156,
+      introFeatureY: 190,
+      introPassY: 214,
+      // Continue prompt, drawn over PLAY during a defeated monster's walk-off.
+      continuePromptY: 150,
+      continueLineHeight: 14,
+      // Game over.
+      overTitleY: 120,
+      overScoreY: 168,
+      overScoreLineHeight: 14,
+      overPromptY: 250,
     },
   },
 
@@ -871,6 +1166,24 @@ const CONFIG = {
     x: 6,
     y: 320,
     color: '#7f8ba3',
+
+    /* Day jumping (06-levels-progression §7.2) — new in Session 9. Playing
+       128 days to see the mega-vitamin milestone isn't a test plan, so:
+         startDay  the absolute day a fresh run begins on, 1-based and
+                   1..768 (so 128 starts you one day short of the first
+                   milestone — set it to 128 and clear the board).
+         dayKeys   live jumps while playing, edge-triggered raw key codes
+                   (InputManager.wasPressed). prevDay/nextDay step one day;
+                   milestone jumps straight to the next 128th day.
+       Also on the console: RAMPAGE.jumpToDay(n). All three go through the
+       same Game.jumpToDay, so none of them is a separate code path that
+       could drift from real progression. */
+    startDay: 1,
+    dayKeys: {
+      prevDay: 'BracketLeft',
+      nextDay: 'BracketRight',
+      milestone: 'Backslash',
+    },
     showPunchBox: true,
     punchBoxColor: 'rgba(232,196,82,0.55)',       // the visible fist (getPunchBox)
     punchTargetColor: 'rgba(232,82,82,0.22)',     // what damages cells (punchTargetRect)
@@ -975,6 +1288,7 @@ class InputManager {
     this.slots = slots;
     this.held = Object.create(null);      // keyCode -> true while physically down
     this.pendingPress = Object.create(null); // keyCode -> true if pressed since last poll
+    this.lastPressed = Object.create(null);  // the edges the current step owns
     this.watched = Object.create(null);   // keyCode -> true if any slot uses it
 
     this.players = [];
@@ -1010,6 +1324,7 @@ class InputManager {
   releaseAll() {
     this.held = Object.create(null);
     this.pendingPress = Object.create(null);
+    this.lastPressed = Object.create(null);
     for (const state of this.players) {
       for (const action of INPUT_ACTIONS) {
         state[action] = false;
@@ -1034,10 +1349,20 @@ class InputManager {
         state[action + 'Pressed'] = pressed;
       }
     }
+    this.lastPressed = this.pendingPress;     // raw edges this step owns
     this.pendingPress = Object.create(null);  // edges are consumed by this step
   }
 
   getPlayer(index) { return this.players[index]; }
+
+  /**
+   * A raw key-code edge for this step, outside the per-player action maps.
+   * Only the Session 9 debug day-jump keys (CONFIG.debug.dayKeys) use this —
+   * they aren't player actions and shouldn't take a slot in INPUT_ACTIONS,
+   * but they still need to be edge-triggered and consumed by exactly one
+   * fixed step like everything else.
+   */
+  wasPressed(code) { return !!this.lastPressed[code]; }
 
   anyPressed(action) {
     for (const state of this.players) if (state[action + 'Pressed']) return true;
@@ -2793,10 +3118,11 @@ class Monster extends Entity {
    * rather than the wall-reaching `punchTargetRect()`. [INFERRED — someone
    * standing between the monster and a building takes the hit meant for
    * them, not the wall behind them; 13-inferred-items.md #32.] This also
-   * matters mechanically: the street's buildings and gaps (CONFIG.buildings.
-   * dayLayout) leave no gap wider than a full punch's reach, so without this
-   * priority a street civilian would almost never be reachable — the wider
-   * wall-reaching rect would always find some building cell first.
+   * matters mechanically: the street's buildings and the gaps LevelData
+   * computes between them leave no gap wider than a full punch's reach on a
+   * typical board, so without this priority a street civilian would almost
+   * never be reachable — the wider wall-reaching rect would always find some
+   * building cell first.
    *
    * A free-roaming Enemy (a street Guardsman mid-run, or a helicopter dipped
    * low enough to reach) is checked next, same box, same reasoning — see
@@ -2822,6 +3148,17 @@ class Monster extends Entity {
       streetEnemy.consume(this);
       game.scoreSystem.award(this, pts, streetEnemy.kind);
       return 'destroyEnemy';
+    }
+
+    /* 06 §7.3 / §6 — a level feature in the punch's way: the train (scored
+       "per hit", so it pays every time and takes several to wreck) or a
+       boater on the river. Checked in the same street-first band as humans
+       and enemies, and before the wall, for the same reason (#32). */
+    const feature = game.featureTargetFor(this);
+    if (feature) {
+      const kind = feature instanceof Train ? 'train' : 'boater';
+      game.scoreSystem.award(this, feature.punch(), kind);
+      return kind;
     }
 
     const target = game.cellTargetFor(this.punchTargetRect(), this.facing);
@@ -3041,6 +3378,19 @@ class Monster extends Entity {
       case Stance.AIR:    this.updateAir(dt, game, input, dir); break;
       case Stance.CLING:  this.updateCling(dt, game, input, dir, vdir, rooted); break;
       case Stance.ROOF:   this.updateRoof(dt, game, input, dir, rooted); break;
+    }
+
+    /* --- 06 §7.3 riverway: "going under drains health" ------------------
+       Only from the street. A monster clinging to a face or on a roof can't
+       be in the water (a riverway shortens the span buildings are laid out
+       across — LevelData.spanFor), and one in mid-air over the river is over
+       it, not in it. Standing on the bridge deck is dry: Game.inWaterAt
+       excludes the bridge's span. This is the call site
+       CONFIG.health.damage.underwaterPerSecond has been waiting for since
+       Session 4. [INFERRED — 13-inferred-items.md #44: §7.3 confirms water
+       drains health and says nothing about the rate or the stance rule.] */
+    if (this.stance === Stance.GROUND && game.inWaterAt(this.x)) {
+      this.applyDamage(CONFIG.health.damage.underwaterPerSecond * dt, 'UNDERWATER');
     }
 
     /* --- §3.2 the fist connects ----------------------------------------
@@ -3429,9 +3779,16 @@ class ScoreSystem {
    * `monster` or `points` is falsy, so call sites never need their own guard
    * (a null `causedBy`, an unpicked-up weapon's expired flight, etc.). */
   award(monster, points, source) {
-    if (!monster || !points) return;
-    const player = this.game.players[monster.playerIndex];
-    if (!player) return;
+    if (!monster) return;
+    this.awardPlayer(this.game.players[monster.playerIndex], points, source);
+  }
+
+  /** The same funnel keyed on the player record rather than a live monster —
+   * §7.2's mega-vitamin milestone pays a player who is still in the run but
+   * whose monster has already walked off screen, so it has no entity to
+   * award through. Everything else goes via `award`. */
+  awardPlayer(player, points, source) {
+    if (!player || !points) return;
     player.score += points;
     player.lastScoreEvent = { points: points, source: source, simTime: this.game.simTime };
   }
@@ -3442,6 +3799,334 @@ class ScoreSystem {
   pickInRange(range) {
     const frac = this.game.nextScoreFrac();
     return Math.round(range.min + (range.max - range.min) * frac);
+  }
+}
+
+
+/* ==========================================================================
+   06-levels-progression §7 — LevelData
+
+   "Each day = one city screen with a fixed number of buildings to level
+   (2-6)." This is the resolver, not the content: every city, building count,
+   feature and enemy set lives in CONFIG.levels.days, and all this does is
+   turn a day *index* into a playable day definition.
+
+   The index is absolute across the whole run: 0-based, 0 .. (128×6 − 1), and
+   Game.advanceDay wraps it back to 0 at the end of the sixth pass (§7.2's
+   "768 days, then resets to day 1"). Within that:
+       dayNumber  1..128 — the day's slot in the current pass, and the key
+                  a CONFIG.levels.days row is matched on.
+       pass       0..5 — how many complete 128-day passes have gone by. Feeds
+                  Game.difficultyScalar, which is what makes "later passes
+                  escalate (more lightning/police)" true.
+
+   The zero-code-change rule (SESSION-PLAN Session 9) is the reason nothing
+   here is a switch on a city: an unmatched day resolves through `defaults` +
+   a procedural layout, an authored row overrides field by field, and the
+   only thing a new city ever needs is one more row in the array.
+   ========================================================================== */
+const LevelData = {
+
+  /** §7.2 — 128 days × 6 passes = 768, then back to day 1. [FAITHFUL] */
+  totalDays() {
+    return CONFIG.levels.daysPerPass * CONFIG.levels.passes;
+  },
+
+  /** Wrap any integer into a legal absolute day index. */
+  normalize(index) {
+    const total = LevelData.totalDays();
+    return ((Math.floor(index) % total) + total) % total;
+  },
+
+  /** 1..128 — the day's slot inside its pass. */
+  dayNumber(index) {
+    return (LevelData.normalize(index) % CONFIG.levels.daysPerPass) + 1;
+  },
+
+  /** 0..5 — completed passes so far. */
+  passNumber(index) {
+    return Math.floor(LevelData.normalize(index) / CONFIG.levels.daysPerPass);
+  },
+
+  /** §7.2 — the mega-vitamin milestone: the last day of any pass. */
+  isMilestone(index) {
+    return LevelData.dayNumber(index) === CONFIG.levels.daysPerPass;
+  },
+
+  /** The authored row for a day slot, or null. A linear scan on purpose —
+   * ~10 rows, resolved once per day, and no cache to go stale when a row is
+   * added (or edited live from the console). */
+  rowFor(dayNumber) {
+    const rows = CONFIG.levels.days;
+    for (let i = 0; i < rows.length; i++) if (rows[i].day === dayNumber) return rows[i];
+    return null;
+  },
+
+  /** Un-authored days still need a name on the interstitial. */
+  placeholderCity(dayNumber) {
+    return 'CITY No. ' + String(dayNumber).padStart(3, '0');
+  },
+
+  /**
+   * §7.3 — the stretch of street the day's buildings are laid out across. A
+   * riverway eats the far end of it (buildings don't stand in the water),
+   * which is what makes a river day's board visibly narrower without any
+   * per-day x arithmetic being authored by hand.
+   */
+  spanFor(features) {
+    const W = CONFIG.world;
+    let right = W.rightBound;
+    if (features && features.riverway) {
+      right = Math.min(right, features.riverway.x - CONFIG.levels.riverMargin);
+    }
+    return { left: W.leftBound, right: right };
+  },
+
+  /**
+   * Turn a row's `buildings` list into placed buildings: { x (left edge),
+   * cols, rows, palette }. Gaps are the leftover street divided evenly and
+   * capped at CONFIG.levels.maxGap, and the whole row is centred in its span
+   * — so a 2-building day (Plano) reads as a small town rather than two
+   * towers pinned to opposite screen edges.
+   *
+   * `rows` is clamped up to CONFIG.buildings.minRows here rather than trusted
+   * from data: a building shorter than the monster's jump apex would let a
+   * street jump land straight on a roof and break traversal
+   * (13-inferred-items.md #15). A data row can't cause that.
+   */
+  layoutRow(specs, span) {
+    const B = CONFIG.buildings;
+    const n = specs.length;
+    if (!n) return [];
+
+    let frontage = 0;
+    for (let i = 0; i < n; i++) frontage += specs[i].cols * B.cellWidth;
+
+    const width = span.right - span.left;
+    const slack = Math.max(0, width - frontage);
+    const gap = n > 1 ? Math.min(Math.floor(slack / (n - 1)), CONFIG.levels.maxGap) : 0;
+    const rowWidth = frontage + gap * (n - 1);
+
+    let x = span.left + Math.max(0, Math.floor((width - rowWidth) / 2));
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const spec = specs[i];
+      out.push({
+        x: x,
+        cols: spec.cols,
+        rows: Math.max(spec.rows, B.minRows),
+        palette: spec.palette === undefined ? i % B.palettes.length : spec.palette,
+      });
+      x += spec.cols * B.cellWidth + gap;
+    }
+    return out;
+  },
+
+  /**
+   * A deterministic board for a day nobody has authored yet — 3 to 6
+   * buildings (never 2: §7.2 makes Plano "the only day with just 2"),
+   * sized to always fit the span. Same no-RNG hash convention as
+   * Building.windowLit and CONFIG.pickups.spawnCycle, so day 47 looks the
+   * same on every run and in the headless tests.
+   * [INFERRED — 13-inferred-items.md #9: the arcade's real per-city layouts
+   * aren't documented anywhere; this is a stand-in until a row is authored.]
+   */
+  proceduralBuildings(dayNumber, span) {
+    const B = CONFIG.buildings;
+    const hash = function (salt) {
+      return ((dayNumber * 2654435761 + salt * 40503) % 1000) / 1000;
+    };
+    const count = 3 + Math.floor(hash(1) * 4);                 // 3..6
+    // Leave at least one cell of gap per building so the row never overflows.
+    const maxCols = Math.floor((span.right - span.left) / B.cellWidth) - count;
+    const cols = [];
+    for (let i = 0; i < count; i++) cols.push(3);
+    let extra = Math.max(0, maxCols - count * 3);
+    for (let i = 0; i < count && extra > 0; i++) {
+      const add = Math.min(extra, Math.floor(hash(i + 2) * 3));  // 0..2 more
+      cols[i] += add;
+      extra -= add;
+    }
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      out.push({
+        cols: cols[i],
+        rows: 5 + Math.floor(hash(i + 20) * 5),                // 5..9
+        palette: (dayNumber + i) % B.palettes.length,
+      });
+    }
+    return out;
+  },
+
+  /**
+   * The whole day, resolved: authored row over defaults, layout placed,
+   * headline picked, difficulty decided. Game.startDay calls this once per
+   * day and everything else reads `game.day`.
+   */
+  resolve(index) {
+    const L = CONFIG.levels;
+    const dayIndex = LevelData.normalize(index);
+    const dayNumber = LevelData.dayNumber(dayIndex);
+    const row = LevelData.rowFor(dayNumber) || {};
+
+    const features = Object.assign({}, L.defaults.features, row.features || {});
+    const enemies = Object.assign({}, L.defaults.enemies, row.enemies || {});
+    const span = LevelData.spanFor(features);
+    const specs = row.buildings || L.defaults.buildings ||
+      LevelData.proceduralBuildings(dayNumber, span);
+
+    const authoredDifficulty = row.difficulty !== undefined && row.difficulty !== null
+      ? row.difficulty : L.defaults.difficulty;
+
+    return {
+      index: dayIndex,
+      dayNumber: dayNumber,
+      pass: LevelData.passNumber(dayIndex),
+      city: row.city || LevelData.placeholderCity(dayNumber),
+      headline: L.headlines[dayIndex % L.headlines.length],
+      authored: !!LevelData.rowFor(dayNumber),
+      buildings: specs,
+      layout: LevelData.layoutRow(specs, span),
+      span: span,
+      features: features,
+      enemies: enemies,
+      // §5.2 — the per-day half of Game.difficultyScalar. An explicit row
+      // value wins; otherwise it ramps with the day number.
+      difficulty: authoredDifficulty === null || authoredDifficulty === undefined
+        ? (dayNumber - 1) * CONFIG.difficulty.dayScalarStep
+        : authoredDifficulty,
+      milestone: LevelData.isMilestone(dayIndex),
+    };
+  },
+
+  /** The names of the features a day actually has, for the intro card. */
+  featureLabels(day) {
+    const f = day.features;
+    const out = [];
+    if (f.riverway) out.push('RIVERWAY');
+    if (f.bridge) out.push('BRIDGE');
+    if (f.pier) out.push('PIER');
+    if (f.boater) out.push('BOATER');
+    if (f.train) out.push('TRAIN');
+    return out;
+  },
+};
+
+
+/* ==========================================================================
+   06-levels-progression §7.3 — Train and Boater (level-feature entities)
+
+   The two §7.3 features that are actors rather than scenery, and the two
+   §6 scoring rows that were left unreachable in Session 8 waiting on them
+   ("Train (per hit) 500", "Boater 750"). Both extend the same Entity base
+   as everything else and are punched through the same resolvePunch chain a
+   street Guardsman is (Game.featureTargetFor) — they're just neither Enemy
+   (they don't attack) nor Human (they aren't food).
+
+   [INFERRED — 13-inferred-items.md #44] §7.3 names both and §6 prices them;
+   nothing else about either is documented. Speeds, spawn cadence, the
+   "how many hits does a train take" number, and the decision that neither
+   damages a monster on contact are all first-pass choices.
+   ========================================================================== */
+class Train extends Entity {
+  constructor(x, dir) {
+    const T = CONFIG.features.train;
+    super(x, CONFIG.world.groundY, T.width, T.height);
+    this.dir = dir;
+    this.hits = 0;
+  }
+
+  static spawn(fromLeft) {
+    const T = CONFIG.features.train;
+    const x = fromLeft ? CONFIG.world.leftBound - T.width : CONFIG.world.rightBound + T.width;
+    return new Train(x, fromLeft ? 1 : -1);
+  }
+
+  update(dt) {
+    if (!this.alive) return;
+    this.x += this.dir * CONFIG.features.train.speed * dt;
+    const margin = this.w + 4;
+    if ((this.dir > 0 && this.x > CONFIG.world.rightBound + margin) ||
+        (this.dir < 0 && this.x < CONFIG.world.leftBound - margin)) this.alive = false;
+  }
+
+  /**
+   * §6 scores the train "per hit" — the only row in the table phrased that
+   * way — so a punch always pays, and it takes `hitsToDestroy` of them to
+   * wreck it. Returns the points for ScoreSystem; Monster.resolvePunch awards.
+   */
+  punch() {
+    this.hits++;
+    if (this.hits >= CONFIG.features.train.hitsToDestroy) this.alive = false;
+    return CONFIG.scoring.train;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const T = CONFIG.features.train;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    const x = cx - this.w / 2, top = feet - this.h;
+    ctx.fillStyle = T.bodyColor;
+    ctx.fillRect(x, top, this.w, this.h);
+    ctx.fillStyle = T.trimColor;
+    ctx.fillRect(x, top, this.w, 4);
+    ctx.fillRect(x, feet - 5, this.w, 5);
+    ctx.fillStyle = T.windowColor;
+    for (let wx = x + 6; wx < x + this.w - 8; wx += 12) ctx.fillRect(wx, top + 7, 7, 6);
+    ctx.fillStyle = T.wheelColor;
+    for (let wx = x + 7; wx < x + this.w - 6; wx += 14) ctx.fillRect(wx, feet - 3, 6, 3);
+    // Damage tell: the wreck darkens with each hit that hasn't finished it.
+    if (this.hits > 0) {
+      ctx.fillStyle = 'rgba(0,0,0,' + (0.22 * this.hits) + ')';
+      ctx.fillRect(x, top, this.w, this.h);
+    }
+  }
+}
+
+class Boater extends Entity {
+  constructor(x, dir) {
+    const B = CONFIG.features.boater;
+    super(x, CONFIG.world.groundY, B.width, B.height);
+    this.dir = dir;
+  }
+
+  /** Spawns at one end of the day's river and drifts along it. */
+  static spawn(river, fromLeft) {
+    const B = CONFIG.features.boater;
+    const x = fromLeft ? river.x - B.width : river.x + river.w + B.width;
+    return new Boater(x, fromLeft ? 1 : -1);
+  }
+
+  update(dt, game) {
+    if (!this.alive) return;
+    const river = game.day && game.day.features.riverway;
+    if (!river) { this.alive = false; return; }
+    this.x += this.dir * CONFIG.features.boater.speed * dt;
+    const margin = this.w + 4;
+    if ((this.dir > 0 && this.x > river.x + river.w + margin) ||
+        (this.dir < 0 && this.x < river.x - margin)) this.alive = false;
+  }
+
+  /** §6 — "Boater: 750". One punch, unlike the train's per-hit row. */
+  punch() {
+    this.alive = false;
+    return CONFIG.scoring.boater;
+  }
+
+  /* ---- 09-art-audio: placeholder rectangle art ------------------------- */
+  draw(ctx, alpha) {
+    if (!this.alive) return;
+    const B = CONFIG.features.boater;
+    const cx = Math.round(this.renderX(alpha));
+    const feet = Math.round(this.renderY(alpha));
+    ctx.fillStyle = B.hullColor;
+    ctx.fillRect(cx - this.w / 2, feet - 6, this.w, 6);
+    ctx.fillStyle = B.personColor;
+    ctx.fillRect(cx - 3, feet - this.h, 6, this.h - 6);
+    ctx.fillStyle = B.oarColor;
+    ctx.fillRect(cx - this.w / 2 - 3, feet - 9, this.w + 6, 2);
   }
 }
 
@@ -3467,6 +4152,57 @@ function drawStreet(ctx) {
   ctx.fillStyle = V.laneColor;
   for (let x = 0; x < V.width; x += V.laneDashWidth + V.laneDashGap) {
     ctx.fillRect(x, V.laneY, V.laneDashWidth, V.laneDashHeight);
+  }
+}
+
+/**
+ * 06-levels-progression §7.3 — the day's static set-piece dressing: the
+ * riverway band, the bridge deck across it, and the pier at the near bank.
+ * Drawn straight after the street and before any entity, so a monster
+ * wading through the river or standing on the bridge draws in front of it.
+ * The moving features (train, boater) are entities and draw themselves.
+ */
+function drawLevelFeatures(ctx, day) {
+  if (!day) return;
+  const F = CONFIG.features, V = CONFIG.view, W = CONFIG.world;
+  const river = day.features.riverway;
+
+  if (river) {
+    const R = F.riverway;
+    ctx.fillStyle = R.waterColor;
+    ctx.fillRect(river.x, W.groundY, river.w, V.height - W.groundY);
+    ctx.fillStyle = R.surfaceColor;
+    ctx.fillRect(river.x, W.groundY, river.w, V.curbHeight);
+    ctx.fillStyle = R.foamColor;
+    for (let x = river.x + 4; x < river.x + river.w - R.rippleWidth; x += R.rippleWidth + R.rippleGap) {
+      ctx.fillRect(x, W.groundY + R.rippleY, R.rippleWidth, R.rippleHeight);
+    }
+  }
+
+  const pier = day.features.pier;
+  if (pier) {
+    const P = F.pier;
+    ctx.fillStyle = P.pileColor;
+    for (let x = pier.x + 2; x < pier.x + pier.w; x += P.pileEvery) {
+      ctx.fillRect(x, W.groundY, P.pileWidth, P.pileDepth);
+    }
+    ctx.fillStyle = P.deckColor;
+    ctx.fillRect(pier.x, W.groundY, pier.w, P.deckHeight);
+  }
+
+  const bridge = day.features.bridge;
+  if (bridge) {
+    const Bg = F.bridge;
+    ctx.fillStyle = Bg.pileColor;
+    ctx.fillRect(bridge.x + 2, W.groundY, Bg.pileWidth, V.height - W.groundY);
+    ctx.fillRect(bridge.x + bridge.w - 2 - Bg.pileWidth, W.groundY, Bg.pileWidth, V.height - W.groundY);
+    ctx.fillStyle = Bg.deckColor;
+    ctx.fillRect(bridge.x, W.groundY, bridge.w, Bg.deckHeight);
+    // Decorative truss above the deck; the monster draws over it.
+    ctx.fillStyle = Bg.trussColor;
+    ctx.fillRect(bridge.x, W.groundY - Bg.trussHeight, 2, Bg.trussHeight);
+    ctx.fillRect(bridge.x + bridge.w - 2, W.groundY - Bg.trussHeight, 2, Bg.trussHeight);
+    ctx.fillRect(bridge.x, W.groundY - Bg.trussHeight, bridge.w, 2);
   }
 }
 
@@ -3527,6 +4263,143 @@ function drawHudEnergyBar(ctx, x, y, monster) {
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 }
 
+/* ---- 08-hud-ui §9 / 06-levels-progression §7 — day screens ------------
+   The three UI states §9 lists that Session 8 didn't build: the day
+   interstitial (city + comedic newspaper headline), the continue prompt
+   during a defeated monster's walk-off, and the mega-vitamin flourish at a
+   128-day milestone. All three read the same 3-column, up-to-3-players
+   assumption the HUD strip does — nothing here counts joined players.     */
+
+/** §7.1 — the "next city" card, shown before every day including the first. */
+function drawDayIntro(game) {
+  const ctx = game.ctx;
+  const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
+  const day = game.day;
+  drawStreet(ctx);
+  drawLevelFeatures(ctx, day);
+
+  textAt(ctx, 'DAY ' + day.dayNumber + ' OF ' + CONFIG.levels.daysPerPass,
+    V.width / 2, L.introDayY, U.bodyFontSize, U.dimTextColor, 'center');
+  textAt(ctx, day.city, V.width / 2, L.introCityY, U.titleFontSize, U.accentColor, 'center');
+
+  const features = LevelData.featureLabels(day);
+  if (features.length) {
+    textAt(ctx, features.join('  ·  '), V.width / 2, L.introFeatureY,
+      U.bodyFontSize, U.textColor, 'center');
+  }
+  // §7.2 — which time around the 128-day list this is.
+  if (day.pass > 0) {
+    textAt(ctx, 'PASS ' + (day.pass + 1) + ' OF ' + CONFIG.levels.passes,
+      V.width / 2, L.introPassY, U.bodyFontSize, U.dimTextColor, 'center');
+  }
+  drawHudStrip(game);
+}
+
+/**
+ * §7.1 — the newspaper-headline interstitial between days, and §7.2's
+ * mega-vitamin flourish when the day just cleared was the 128th of a pass.
+ * Headlines are short originals in the arcade's comedic spirit rather than
+ * its own copy — CONFIG.levels.headlines, picked by day index.
+ */
+function drawDayClear(game) {
+  const ctx = game.ctx;
+  const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
+  const cleared = game.clearedDay;
+  drawStreet(ctx);
+
+  const px = U.paperMargin, pw = V.width - U.paperMargin * 2;
+  ctx.fillStyle = U.paperShadeColor;
+  ctx.fillRect(px + 3, U.paperTop + 3, pw, U.paperHeight);
+  ctx.fillStyle = U.paperColor;
+  ctx.fillRect(px, U.paperTop, pw, U.paperHeight);
+
+  const mid = V.width / 2;
+  textAt(ctx, 'THE DAILY RUBBLE', mid, U.paperTop + L.paperMastheadOffsetY,
+    U.bodyFontSize, U.paperInkColor, 'center');
+  ctx.fillStyle = U.paperInkColor;
+  ctx.fillRect(px + U.paperRuleInset, U.paperTop + L.paperRuleOffsetY,
+    pw - U.paperRuleInset * 2, 1);
+
+  textAt(ctx, cleared.headline, mid, U.paperTop + L.paperHeadlineOffsetY,
+    U.bodyFontSize, U.paperInkColor, 'center');
+  textAt(ctx, cleared.city + '  —  DAY ' + cleared.dayNumber + ' LEVELLED',
+    mid, U.paperTop + L.paperDeckOffsetY, U.smallFontSize, U.paperMutedInkColor, 'center');
+
+  // §7.2 mega-vitamin flourish — only on a 128-day milestone.
+  if (game.megaVitamin) {
+    textAt(ctx, 'MEGA-VITAMIN!  FULL HEAL  +' + game.megaVitamin.points +
+      '  (' + game.megaVitamin.players.join(' ') + ')',
+      mid, U.paperTop + L.paperBonusOffsetY, U.bodyFontSize, U.bonusColor, 'center');
+  }
+
+  const scores = game.activePlayers().map(function (p) {
+    return p.label + ' ' + String(p.score).padStart(6, '0');
+  }).join('    ');
+  textAt(ctx, scores, mid, U.paperTop + L.paperScoreOffsetY,
+    U.smallFontSize, U.paperMutedInkColor, 'center');
+
+  textAt(ctx, 'NEXT — DAY ' + game.day.dayNumber + ': ' + game.day.city,
+    mid, U.paperTop + L.paperNextOffsetY, U.bodyFontSize, U.paperInkColor, 'center');
+
+  if (blinkOn(game.stateTime)) {
+    textAt(ctx, 'PRESS START TO SKIP', mid, L.paperSkipY,
+      U.smallFontSize, U.dimTextColor, 'center');
+  }
+}
+
+/**
+ * §7.4 — "if the player re-inserts a credit before the human figure finishes
+ * walking off screen, that monster rejoins." Drawn over PLAY for exactly as
+ * long as that walk-off lasts, one line per player in the window, with the
+ * seconds left on it. Nothing here is a state change — the prompt is an
+ * overlay so the other monsters keep playing underneath it (§7.4: "remaining
+ * monsters continue").
+ */
+function drawContinuePrompt(game) {
+  const ctx = game.ctx;
+  const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
+  const waiting = game.players.filter(function (p) { return p.awaitingContinue; });
+  if (!waiting.length) return;
+
+  let y = L.continuePromptY;
+  for (const p of waiting) {
+    const keys = CONFIG.players.slots[p.index].keys;
+    const label = p.label + ' CONTINUE?  PRESS ' + keys.punch[0].replace('Key', '') +
+      '  —  ' + Math.ceil(p.continueTimer);
+    if (blinkOn(game.simTime)) {
+      textAt(ctx, label, V.width / 2, y, U.headingFontSize, U.continueColor, 'center');
+    }
+    y += L.continueLineHeight;
+  }
+}
+
+/** §7.4 — every continue window closed. No extra lives are ever awarded
+ * (§6), so this is simply the end of the run. */
+function drawGameOver(game) {
+  const ctx = game.ctx;
+  const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
+  drawStreet(ctx);
+  textAt(ctx, 'GAME OVER', V.width / 2, L.overTitleY, U.titleFontSize, U.accentColor, 'center');
+
+  let y = L.overScoreY;
+  for (const p of game.activePlayers()) {
+    const type = CONFIG.monsterTypes[p.monsterTypeId];
+    textAt(ctx, p.label + '  ' + type.name + '  ' + String(p.score).padStart(6, '0') +
+      '  ·  ' + p.continues + ' CONTINUE' + (p.continues === 1 ? '' : 'S'),
+      V.width / 2, y, U.bodyFontSize, U.textColor, 'center');
+    y += L.overScoreLineHeight;
+  }
+  const reached = game.clearedDay || game.day;
+  if (reached) {
+    textAt(ctx, 'REACHED DAY ' + reached.dayNumber + ' — ' + reached.city,
+      V.width / 2, y + L.overScoreLineHeight, U.smallFontSize, U.dimTextColor, 'center');
+  }
+  if (blinkOn(game.stateTime)) {
+    textAt(ctx, 'PRESS START', V.width / 2, L.overPromptY, U.headingFontSize, U.textColor, 'center');
+  }
+}
+
+
 /* ---- Debug readout (temporary scaffolding predating the real HUD) ---- */
 function drawDebug(game) {
   if (!CONFIG.debug.enabled) return;
@@ -3536,6 +4409,18 @@ function drawDebug(game) {
     'STATE ' + game.state + '   FPS ' + game.fps.toFixed(0) +
       '   TICK ' + game.tickCount + '   SIM ' + game.simTime.toFixed(1) + 's',
   ];
+  // Session 9 readout: where the run is in the 768-day sequence, what the
+  // day system resolved for it, and the scalar that day is driving.
+  if (game.day) {
+    const d = game.day;
+    lines.push('DAY ' + (game.dayIndex + 1) + '/' + LevelData.totalDays() +
+      '  (No.' + d.dayNumber + ' PASS ' + (d.pass + 1) + ')  ' + d.city +
+      (d.authored ? '' : ' [procedural]') +
+      '  BLDG ' + d.layout.length +
+      '  FEAT ' + (LevelData.featureLabels(d).join('/') || '—') +
+      '  DIFF ' + game.difficultyScalar().toFixed(2) +
+      (d.milestone ? '  ★MILESTONE' : ''));
+  }
   const monster = game.entities.ofType(Monster)[0];
   if (monster) {
     lines.push(
@@ -3606,7 +4491,20 @@ function drawDebug(game) {
     lines.push(parts.join('  ') + (game.dayCleared() ? '   DAY CLEAR' : ''));
     if (owned.length) lines.push('COLLAPSE ' + owned.join('  '));
   }
-  lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /)');
+  // Session 9: level-feature entities and any open continue windows.
+  const trains = game.entities.ofType(Train).length;
+  const boaters = game.entities.ofType(Boater).length;
+  const waiting = game.players.filter(function (p) { return p.awaitingContinue; });
+  const out = game.players.filter(function (p) { return p.joined && p.outOfPlay; });
+  if (trains || boaters || waiting.length || out.length) {
+    lines.push('TRAINS ' + trains + '  BOATERS ' + boaters +
+      '  CONTINUE ' + (waiting.map(function (p) {
+        return p.label + ':' + p.continueTimer.toFixed(1) + 's';
+      }).join(' ') || '—') +
+      '  OUT ' + (out.map(function (p) { return p.label; }).join(' ') || '—'));
+  }
+  lines.push('MOVE A/D  CLIMB W/S  JUMP G  PUNCH F   (P2 arrows + . /)   ' +
+    'DAY [ ]  MILESTONE \\');
   for (let i = 0; i < lines.length; i++) {
     textAt(ctx, lines[i], D.x, D.y + i * D.lineHeight, D.fontSize, D.color);
   }
@@ -3650,10 +4548,10 @@ const GameState = {
   BOOT: 'BOOT',
   TITLE: 'TITLE',
   CHARACTER_SELECT: 'CHARACTER_SELECT',
-  DAY_INTRO: 'DAY_INTRO',        // stub — Session 9
+  DAY_INTRO: 'DAY_INTRO',        // §7.1 — "next city" card, then PLAY
   PLAY: 'PLAY',
-  DAY_CLEAR: 'DAY_CLEAR',        // stub — Session 9
-  GAME_OVER: 'GAME_OVER',        // stub — Session 9 (continue window)
+  DAY_CLEAR: 'DAY_CLEAR',        // §7.1 — newspaper headline, then the next day
+  GAME_OVER: 'GAME_OVER',        // §7.4 — every continue window closed
 };
 
 const MONSTER_TYPE_IDS = Object.keys(CONFIG.monsterTypes);
@@ -3702,6 +4600,12 @@ class Game {
     this.scoreSeed = 0;
     this.scoreSystem = new ScoreSystem(this);
 
+    /* 06-levels-progression §7.3 — level-feature spawn cadences (train,
+       boater), alongside the military ones above. Reset per day, and only
+       ticked at all when the day's feature flags call for them. */
+    this.trainTimer = 0;
+    this.boaterTimer = 0;
+
     // Run-level data, persisted across state transitions (§11.2).
     this.players = [];
     for (let i = 0; i < CONFIG.players.maxPlayers; i++) {
@@ -3713,9 +4617,33 @@ class Game {
         confirmed: false,
         score: 0,                 // the only thing that writes here is ScoreSystem.award
         lastScoreEvent: null,     // { points, source, simTime } — HUD/debug flourish, not read for logic
+        /* 06-levels-progression §7.1/§7.4 — new in Session 9.
+           `energy` is this player's health carried *between* days: a monster
+           spawns on the new day with whatever it ended the last one on, not
+           topped up for free. [INFERRED — 13-inferred-items.md #45: §7 never
+           says health persists, but the mega-vitamin's "surviving to the end
+           of a 128-day block fully restores health" reward is meaningless if
+           every day already starts full, so persistence is the reading that
+           makes the documented mechanic mean something.]
+           `outOfPlay` is a defeat the continue window closed on — the player
+           is out for the rest of the run (§7.4: remaining monsters carry on).
+           `awaitingContinue`/`continueTimer` are that window while it's open. */
+        energy: CONFIG.health.maxEnergy,
+        outOfPlay: false,
+        awaitingContinue: false,
+        continueTimer: 0,
+        continues: 0,
       });
     }
-    this.dayIndex = 0;            // LevelData drives this from Session 9
+
+    /* 06-levels-progression §7.2 — absolute day index across the whole run,
+       0-based: 0 .. (128×6 − 1), wrapping back to 0. `day` is the resolved
+       LevelData definition for it, refreshed by startDay and read by
+       everything from the SpawnDirector to the HUD. */
+    this.dayIndex = 0;
+    this.day = null;
+    this.megaVitamin = null;      // { points, players } flourish for the interstitial
+    this.clearedDay = null;       // the day the DAY_CLEAR screen is reporting on
 
     this.state = null;
     this.stateTime = 0;
@@ -3755,37 +4683,83 @@ class Game {
     return this.players.filter(function (p) { return p.joined; });
   }
 
-  /** Spawn one monster per confirmed player (02 §3.1: they start on the street). */
+  /**
+   * 06-levels-progression §7.4 — the players a day actually spawns a monster
+   * for: joined, and not knocked out of the run by a continue window that
+   * closed. "In multiplayer, remaining monsters continue," so this is a
+   * per-player filter, never a global game-over test.
+   */
+  playersInPlay() {
+    return this.players.filter(function (p) { return p.joined && !p.outOfPlay; });
+  }
+
+  /** The live Monster belonging to a player slot, if it still has one. */
+  monsterFor(playerIndex) {
+    const monsters = this.entities.ofType(Monster);
+    for (let i = 0; i < monsters.length; i++) {
+      if (monsters[i].playerIndex === playerIndex && monsters[i].alive) return monsters[i];
+    }
+    return null;
+  }
+
+  /** Spawn one monster per in-play player (02 §3.1: they start on the street). */
   spawnMonsters() {
-    const active = this.activePlayers();
+    const active = this.playersInPlay();
     for (let i = 0; i < active.length; i++) {
       const p = active[i];
       const x = CONFIG.monster.spawnX + i * CONFIG.monster.spawnSpacing;
-      this.entities.add(new Monster(p.monsterTypeId, p.index, x));
+      const monster = new Monster(p.monsterTypeId, p.index, x);
+      // §7.1 — health carries between days; the mega-vitamin is what refills
+      // it. See the `energy` note on the player record.
+      monster.energy = clamp(p.energy, 1, CONFIG.health.maxEnergy);
+      this.entities.add(monster);
     }
   }
 
   /**
-   * 02 §3.2 — lay the day's buildings across the street. Hardcoded from
-   * CONFIG.buildings.dayLayout; Session 9 swaps this for LevelData.
-   * `this.buildings` is the query list traversal reads every tick — cheaper
-   * than filtering the whole entity list per monster per stance check.
+   * 02 §3.2 / 06 §7 — lay the day's buildings across the street, from the
+   * layout LevelData resolved for the current day. Nothing about which
+   * buildings, how many, or where is decided here any more — that is all
+   * CONFIG.levels data. `this.buildings` is the query list traversal reads
+   * every tick — cheaper than filtering the whole entity list per monster
+   * per stance check.
    */
   spawnBuildings() {
-    const B = CONFIG.buildings;
     this.buildings = [];
-    let x = B.startX;
-    for (let i = 0; i < B.dayLayout.length; i++) {
-      const spec = B.dayLayout[i];
-      const building = new Building(x, spec.cols, spec.rows, spec.palette, i);
+    const layout = this.day.layout;
+    for (let i = 0; i < layout.length; i++) {
+      const spec = layout[i];
+      const building = new Building(spec.x, spec.cols, spec.rows, spec.palette, i);
       this.buildings.push(building);
       this.entities.add(building);
-      x += spec.cols * B.cellWidth + spec.gapAfter;
+    }
+  }
+
+  /**
+   * 06-levels-progression §7 — start (or restart) a whole run. Everything
+   * that survives a day but not a run resets here: scores, carried health,
+   * knocked-out players, and the day index itself (from CONFIG.debug.startDay,
+   * so a debug run can begin one day short of a 128-day milestone).
+   */
+  startRun() {
+    this.dayIndex = LevelData.normalize(CONFIG.debug.startDay - 1);
+    this.day = null;
+    this.megaVitamin = null;
+    this.clearedDay = null;
+    for (const p of this.players) {
+      p.score = 0;
+      p.lastScoreEvent = null;
+      p.energy = CONFIG.health.maxEnergy;
+      p.outOfPlay = false;
+      p.awaitingContinue = false;
+      p.continueTimer = 0;
+      p.continues = 0;
     }
   }
 
   /** Buildings first so monsters draw in front of them (the street is a lane). */
   startDay() {
+    this.day = LevelData.resolve(this.dayIndex);
     this.entities.clear();
     this.collapseEvents = [];
     this.humanSpawnTimer = 0;
@@ -3797,10 +4771,165 @@ class Game {
     this.vehicleTimer = 0;
     this.paratrooperTimer = 0;
     this.lightningTimer = 0;
+    this.trainTimer = 0;
+    this.boaterTimer = 0;
     this.spawnSeed = 0;
     this.scoreSeed = 0;            // §6 — only the range-pick sequence resets; player.score does not
+    for (const p of this.players) { p.awaitingContinue = false; p.continueTimer = 0; }
     this.spawnBuildings();
     this.spawnMonsters();
+  }
+
+  /**
+   * 06-levels-progression §7.1 — write each in-play monster's remaining
+   * energy back onto its player record, so the next day starts where this
+   * one ended. Called when a day ends, before the entities are cleared.
+   */
+  storeEnergies() {
+    for (const p of this.playersInPlay()) {
+      const monster = this.monsterFor(p.index);
+      if (monster && !monster.defeated) p.energy = monster.energy;
+    }
+  }
+
+  /**
+   * §7.2 — "the 128-day sequence runs six times total ... then resets to day
+   * 1." One place decides what the next day is, and it is pure index
+   * arithmetic — LevelData.normalize handles the 768 → 0 wrap.
+   */
+  advanceDay() {
+    this.dayIndex = LevelData.normalize(this.dayIndex + 1);
+  }
+
+  /**
+   * §7.2 debug — jump to an arbitrary absolute day (1-based, matching
+   * CONFIG.debug.startDay and the interstitial's own numbering). Restarts
+   * the current day on the new index so the board, features, enemy set and
+   * difficulty all reload the normal way; nothing about progression is
+   * special-cased for the jump. Reachable three ways — CONFIG.debug.startDay,
+   * the CONFIG.debug.dayKeys keys, and RAMPAGE.jumpToDay(n) — all of which
+   * land here.
+   */
+  jumpToDay(absoluteDay) {
+    this.dayIndex = LevelData.normalize(absoluteDay - 1);
+    if (this.state === GameState.PLAY) this.startDay();
+    else this.setState(GameState.DAY_INTRO);
+    return this.dayIndex + 1;
+  }
+
+  /** Raw debug keys, read once per fixed step. Guarded on CONFIG.debug.enabled
+   * so a shipped build has no hidden day-skip. */
+  updateDebugDayKeys() {
+    if (!CONFIG.debug.enabled) return;
+    const K = CONFIG.debug.dayKeys;
+    if (this.input.wasPressed(K.nextDay)) this.jumpToDay(this.dayIndex + 2);
+    else if (this.input.wasPressed(K.prevDay)) this.jumpToDay(this.dayIndex);
+    else if (this.input.wasPressed(K.milestone)) {
+      // The next day whose slot-in-pass is 128 — i.e. the next mega-vitamin.
+      const per = CONFIG.levels.daysPerPass;
+      this.jumpToDay(Math.floor(this.dayIndex / per) * per + per);
+    }
+  }
+
+  /**
+   * 06-levels-progression §7.2 / 05-scoring §6 — the mega-vitamin milestone:
+   * "surviving to the end of each 128-day block fully restores health and
+   * awards 5,000 points." Fired by the DAY_CLEAR handler the moment day 128
+   * of any pass is cleared, before the day advances.
+   *
+   * [INFERRED — 13-inferred-items.md #46] §7.2 doesn't say who gets it in a
+   * multiplayer game. "Surviving to the end" is read literally: every player
+   * still in play (joined, not knocked out) is healed and paid; a player
+   * whose continue window closed earlier gets nothing.
+   */
+  awardMegaVitamin() {
+    const players = this.playersInPlay();
+    for (const p of players) {
+      p.energy = CONFIG.health.maxEnergy;
+      const monster = this.monsterFor(p.index);
+      if (monster && !monster.defeated) monster.energy = CONFIG.health.maxEnergy;
+      // Paid on the player record, not through a monster: a player mid-
+      // continue-window has no live monster but is still in the run.
+      this.scoreSystem.awardPlayer(p, CONFIG.scoring.megaVitaminBonus, 'megaVitaminBonus');
+    }
+    this.megaVitamin = {
+      points: CONFIG.scoring.megaVitaminBonus,
+      players: players.map(function (p) { return p.label; }),
+    };
+  }
+
+  /**
+   * 06-levels-progression §7.4 — the continue window. "If the player
+   * re-inserts a credit before the human figure finishes walking off screen,
+   * that monster rejoins." The walk-off IS the window: while a player's
+   * defeated monster is still on screen, that player can press punch/jump/
+   * start to buy back in. When the human clears the screen and despawns, the
+   * window closes and the player is out for the rest of the run.
+   *
+   * [INFERRED — 13-inferred-items.md #47] The browser has no coin slot, so
+   * "re-insert a credit" is any of that player's own action keys. Continues
+   * are unlimited (the arcade's limit was the player's wallet), the rejoining
+   * monster comes back at full energy, and the score carries over — an
+   * arcade continue never wiped your score.
+   */
+  updateContinueWindows(dt) {                                // eslint-disable-line no-unused-vars
+    for (const p of this.playersInPlay()) {
+      const monster = this.monsterFor(p.index);
+
+      if (monster && monster.defeated) {
+        p.awaitingContinue = true;
+        // Time left before the human figure is fully off screen — exactly the
+        // walk-off geometry Monster.updateDefeated despawns on.
+        const edge = monster.walkOffDir < 0 ? -monster.w : CONFIG.view.width + monster.w;
+        p.continueTimer = Math.max(0, Math.abs(edge - monster.x) / CONFIG.health.walkOffSpeed);
+        const input = this.input.getPlayer(p.index);
+        if (input.punchPressed || input.jumpPressed || input.startPressed) this.continuePlayer(p);
+      } else if (p.awaitingContinue) {
+        // The monster despawned without a continue — window closed.
+        p.awaitingContinue = false;
+        p.continueTimer = 0;
+        p.outOfPlay = true;
+      }
+    }
+  }
+
+  /**
+   * §7.4 — end every open continue window at once, knocking those players
+   * out. Called when the day itself ends: the window *is* the walk-off, and
+   * a cleared day stops the walk-off, so there is no window left to buy into.
+   * [INFERRED — 13-inferred-items.md #47: the arcade never had to answer what
+   * happens when another player levels the last building mid-walk-off. Ending
+   * the window with the day is the reading consistent with what the window is;
+   * carrying it into the next day would make it something else.]
+   */
+  closeContinueWindows() {
+    for (const p of this.players) {
+      if (!p.awaitingContinue) continue;
+      p.awaitingContinue = false;
+      p.continueTimer = 0;
+      p.outOfPlay = true;
+    }
+  }
+
+  /** §7.4 — "that monster rejoins and play continues." */
+  continuePlayer(player) {
+    const old = this.monsterFor(player.index);
+    if (old) old.alive = false;
+    player.awaitingContinue = false;
+    player.continueTimer = 0;
+    player.energy = CONFIG.health.maxEnergy;
+    player.continues++;
+    const seat = this.playersInPlay().indexOf(player);
+    const x = CONFIG.monster.spawnX + Math.max(0, seat) * CONFIG.monster.spawnSpacing;
+    const monster = new Monster(player.monsterTypeId, player.index, x);
+    this.entities.add(monster);
+    return monster;
+  }
+
+  /** §7.4 — nobody left in play. Only true once every joined player's own
+   * continue window has closed. */
+  runOver() {
+    return this.activePlayers().length > 0 && this.playersInPlay().length === 0;
   }
 
   /**
@@ -3862,85 +4991,109 @@ class Game {
   }
 
   /**
-   * 04-military-hazards §5.2 — the single manual difficulty knob
-   * (CONFIG.difficulty.scalar) standing in for Session 9's real day/level
-   * system. Every axis this session can express without LevelData (axis 1,
-   * "more buildings," is out of scope — see the CONFIG comment) routes
-   * through these three helpers, so `updateSpawnDirector` and every
-   * trySpawn* method below read scaled numbers instead of the raw
-   * CONFIG.spawnDirector/CONFIG.enemies values directly. At `scalar = 0`
-   * every one of them is the identity — scaledInterval/scaledMax return
-   * their input unchanged and policeChance/bombChance return their base
-   * fraction — so this is a pure addition on top of Session 6's behavior.
-   * [INFERRED — 13-inferred-items.md #41: the GDD confirms each axis's
+   * 04-military-hazards §5.2 / 06-levels-progression §7.2 — the difficulty
+   * scalar, now driven by the day index rather than typed into CONFIG by
+   * hand (Session 7's manual knob survives as a debug offset on top).
+   *
+   *   day.difficulty        the per-day term — an authored row's explicit
+   *                         value, or a ramp across the 128 days of a pass.
+   *   pass × passScalarStep §7.2's "later passes escalate": every completed
+   *                         128-day pass permanently raises it, which is
+   *                         what puts more lightning and more police on the
+   *                         board on the second and later passes (via
+   *                         scaledMax and policeChance below).
+   *   CONFIG.difficulty.scalar  a manual offset, 0 by default.
+   *
+   * Safe to call before a day is resolved (title/character select) — it
+   * resolves the pending day rather than returning a wrong number.
+   */
+  difficultyScalar() {
+    const day = this.day || LevelData.resolve(this.dayIndex);
+    return day.difficulty +
+      day.pass * CONFIG.difficulty.passScalarStep +
+      CONFIG.difficulty.scalar;
+  }
+
+  /**
+   * Every §5.2 axis routes through these four helpers, so `updateSpawnDirector`
+   * and every trySpawn* method below read scaled numbers instead of raw
+   * CONFIG.spawnDirector/CONFIG.enemies values. At scalar 0 (day 1, pass 1,
+   * no offset) every one of them is the identity — scaledInterval/scaledMax
+   * return their input unchanged and policeChance/bombChance return their
+   * base fraction — so day 1 still plays exactly as Session 6 built it.
+   * [INFERRED — 13-inferred-items.md #36/#43: the GDD confirms each axis's
    * direction, never a rate.]
    */
   scaledInterval(base) {
-    return base / (1 + CONFIG.difficulty.scalar * CONFIG.difficulty.cadenceScale);
+    return base / (1 + this.difficultyScalar() * CONFIG.difficulty.cadenceScale);
   }
 
   scaledMax(base) {
-    return base + Math.floor(CONFIG.difficulty.scalar * CONFIG.difficulty.maxUnitGrowth);
+    return base + Math.floor(this.difficultyScalar() * CONFIG.difficulty.maxUnitGrowth);
   }
 
   /** §5.2 axis 2/5: "more and faster ground units ... more police [on later
    * loops]" — the fraction of new tank/police spawns that roll police. */
   policeChance() {
     const D = CONFIG.difficulty;
-    return clamp(D.policeShareBase + D.scalar * D.policeShareGrowth, 0, 1);
+    return clamp(D.policeShareBase + this.difficultyScalar() * D.policeShareGrowth, 0, 1);
   }
 
   /** §5.2 axis 3: "helicopters shift from strafing to bombing." Only read
    * when CONFIG.enemies.helicopter.behaviorMode is left at 'AUTO'. */
   bombChance() {
     const D = CONFIG.difficulty;
-    return clamp(D.scalar * D.bombChanceGrowth, 0, 1);
+    return clamp(this.difficultyScalar() * D.bombChanceGrowth, 0, 1);
   }
 
   /**
    * 10-architecture §11.3 SpawnDirector — "Present every day: National
-   * Guardsmen and helicopters." Six independent cadence timers (three new
-   * in Session 7 — vehicles, paratroopers, lightning), each capped at its
-   * own scaled `CONFIG.spawnDirector.max*` concurrent count.
+   * Guardsmen and helicopters." Eight independent cadence timers, each
+   * capped at its own scaled `CONFIG.spawnDirector.max*` concurrent count.
+   *
+   * Session 9 gates each one on the *day's* enemy set / feature flags
+   * (`this.day.enemies`, `this.day.features` — CONFIG.levels data), which is
+   * what lets day 1 be Guardsmen-and-helicopters only while a later city
+   * fields the full roster, with no code change per city. A day with a flag
+   * off doesn't just fail its spawn roll — its timer never ticks at all, so
+   * turning the flag back on doesn't fire a backlog of spawns at once.
    */
   updateSpawnDirector(dt) {
     const S = CONFIG.spawnDirector;
+    const set = this.day ? this.day.enemies : CONFIG.levels.defaults.enemies;
+    const features = this.day ? this.day.features : CONFIG.levels.defaults.features;
 
-    this.windowGuardsmanTimer -= dt;
-    if (this.windowGuardsmanTimer <= 0) {
-      this.windowGuardsmanTimer = this.scaledInterval(S.guardsmanWindowInterval);
-      this.trySpawnWindowGuardsman();
-    }
+    this.tickSpawn('windowGuardsmanTimer', set.guardsmen, dt,
+      this.scaledInterval(S.guardsmanWindowInterval), this.trySpawnWindowGuardsman);
+    this.tickSpawn('streetGuardsmanTimer', set.guardsmen, dt,
+      this.scaledInterval(S.guardsmanStreetInterval), this.trySpawnStreetGuardsman);
+    this.tickSpawn('helicopterTimer', set.helicopters, dt,
+      this.scaledInterval(S.helicopterInterval), this.trySpawnHelicopter);
+    this.tickSpawn('vehicleTimer', set.vehicles, dt,
+      this.scaledInterval(S.vehicleInterval), this.trySpawnVehicle);
+    this.tickSpawn('paratrooperTimer', set.paratroopers, dt,
+      this.scaledInterval(S.paratrooperInterval), this.trySpawnParatrooper);
+    this.tickSpawn('lightningTimer', set.lightning, dt,
+      this.scaledInterval(S.lightningInterval), this.trySpawnLightning);
 
-    this.streetGuardsmanTimer -= dt;
-    if (this.streetGuardsmanTimer <= 0) {
-      this.streetGuardsmanTimer = this.scaledInterval(S.guardsmanStreetInterval);
-      this.trySpawnStreetGuardsman();
-    }
+    /* 06-levels-progression §7.3 — level features. Deliberately NOT passed
+       through scaledInterval: a trolley timetable and a boater on the river
+       aren't escalation axes, they're dressing the day either has or hasn't. */
+    this.tickSpawn('trainTimer', features.train, dt, S.trainInterval, this.trySpawnTrain);
+    this.tickSpawn('boaterTimer', features.boater && !!features.riverway, dt,
+      S.boaterInterval, this.trySpawnBoater);
+  }
 
-    this.helicopterTimer -= dt;
-    if (this.helicopterTimer <= 0) {
-      this.helicopterTimer = this.scaledInterval(S.helicopterInterval);
-      this.trySpawnHelicopter();
-    }
-
-    this.vehicleTimer -= dt;
-    if (this.vehicleTimer <= 0) {
-      this.vehicleTimer = this.scaledInterval(S.vehicleInterval);
-      this.trySpawnVehicle();
-    }
-
-    this.paratrooperTimer -= dt;
-    if (this.paratrooperTimer <= 0) {
-      this.paratrooperTimer = this.scaledInterval(S.paratrooperInterval);
-      this.trySpawnParatrooper();
-    }
-
-    this.lightningTimer -= dt;
-    if (this.lightningTimer <= 0) {
-      this.lightningTimer = this.scaledInterval(S.lightningInterval);
-      this.trySpawnLightning();
-    }
+  /** One cadence timer: counts down only while its day flag is on, then
+   * rearms and rolls. A flag that's off freezes the timer where it is rather
+   * than letting it run negative, so switching a day's feature/enemy set can
+   * never fire a backlog of spawns on the first tick. */
+  tickSpawn(timerKey, enabled, dt, interval, spawnFn) {
+    if (!enabled) return;
+    this[timerKey] -= dt;
+    if (this[timerKey] > 0) return;
+    this[timerKey] = interval;
+    spawnFn.call(this);
   }
 
   /** Picks a still-standing building and, within it, a free INTACT/CRACKED
@@ -4037,7 +5190,64 @@ class Game {
     this.entities.add(LightningCloud.spawn(fromLeft));
   }
 
-  /** §7 day clear: every building on the board is rubble. Session 9 acts on it. */
+  /** 06 §7.3 — new in Session 9. The train/trolley crossing the street. */
+  trySpawnTrain() {
+    const S = CONFIG.spawnDirector;
+    const active = this.entities.ofType(Train).filter(function (t) { return t.alive; });
+    if (active.length >= S.maxTrains) return;
+    this.entities.add(Train.spawn(this.nextSpawnFrac() < 0.5));
+  }
+
+  /** 06 §7.3 — new in Session 9. A boater drifting along the day's river. */
+  trySpawnBoater() {
+    const S = CONFIG.spawnDirector;
+    const river = this.day && this.day.features.riverway;
+    if (!river) return;
+    const active = this.entities.ofType(Boater).filter(function (b) { return b.alive; });
+    if (active.length >= S.maxBoaters) return;
+    this.entities.add(Boater.spawn(river, this.nextSpawnFrac() < 0.5));
+  }
+
+  /**
+   * 06 §7.3 — the level-feature entity a punch connects with, if any. Same
+   * shape as humanTargetFor/enemyTargetFor: tested against the drawn fist
+   * (getPunchBox), best overlap wins. Train and Boater aren't Enemies (they
+   * never attack) or Humans (they're not food), so they need their own
+   * lookup rather than riding either of those.
+   */
+  featureTargetFor(monster) {
+    const box = monster.getPunchBox();
+    if (!box) return null;
+    let best = null, bestArea = 0;
+    const targets = this.entities.ofType(Train).concat(this.entities.ofType(Boater));
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i];
+      if (!t.alive) continue;
+      const ox = Math.min(box.x + box.w, t.right) - Math.max(box.x, t.left);
+      const oy = Math.min(box.y + box.h, t.bottom) - Math.max(box.y, t.top);
+      if (ox <= 0 || oy <= 0) continue;
+      const area = ox * oy;
+      if (area > bestArea) { best = t; bestArea = area; }
+    }
+    return best;
+  }
+
+  /**
+   * 06 §7.3 — "riverway (water hazard — going under drains health)". True
+   * when this x is over the day's river and not over the bridge deck
+   * spanning it: the bridge is the dry way across, which is the whole point
+   * of the pair of features existing on the same board.
+   */
+  inWaterAt(x) {
+    if (!this.day) return false;
+    const river = this.day.features.riverway;
+    if (!river || x < river.x || x > river.x + river.w) return false;
+    const bridge = this.day.features.bridge;
+    if (bridge && x >= bridge.x && x <= bridge.x + bridge.w) return false;
+    return true;
+  }
+
+  /** §7 day clear: every building on the board is rubble. */
   dayCleared() {
     return this.buildings.length > 0 && this.buildings.every(function (b) { return b.isRubble; });
   }
@@ -4307,7 +5517,12 @@ Game.prototype.handlers = {
         if (input.punchPressed || input.jumpPressed) p.confirmed = true;
       }
       const allReady = active.length > 0 && active.every(function (p) { return p.confirmed; });
-      if (allReady) game.setState(GameState.PLAY);
+      if (allReady) {
+        // 06 §7 — a confirmed roster is the start of a run: scores, carried
+        // health and the day index all reset here, once, before day 1 loads.
+        game.startRun();
+        game.setState(GameState.DAY_INTRO);
+      }
     },
     draw(game) {
       const ctx = game.ctx;
@@ -4359,10 +5574,20 @@ Game.prototype.handlers = {
     },
   },
 
-  /* Stub — Session 9 (day headline interstitial). */
+  /* 08-hud-ui §9 / 06 §7.1 — the "next city" card. Shown before every day,
+     including the first, so a run always opens by naming where it is. */
   [GameState.DAY_INTRO]: {
-    update(game) { game.setState(GameState.PLAY); },
-    draw(game) { drawStubScreen(game, 'DAY INTRO', 'SESSION 9'); },
+    enter(game) {
+      // Resolve the day now (rather than at PLAY's enter) so the card can
+      // name the city, its features and the pass without guessing.
+      game.day = LevelData.resolve(game.dayIndex);
+    },
+    update(game) {
+      if (game.stateTime >= CONFIG.levels.introHold || game.input.anyPressed('start')) {
+        game.setState(GameState.PLAY);
+      }
+    },
+    draw(game) { drawDayIntro(game); },
   },
 
   [GameState.PLAY]: {
@@ -4371,17 +5596,26 @@ Game.prototype.handlers = {
       game.crossing = { running: false, time: 0, last: null, readout: '' };
     },
     update(game, dt) {
-      /* Update order per 10-architecture §11.1. Sessions 2–9 fill in the
-         missing steps in place: monsters → enemies/hazards → projectiles →
-         buildings → collisions → eating/pickups → score/health → day-clear. */
+      /* Update order per 10-architecture §11.1: monsters → enemies/hazards →
+         projectiles → buildings → collisions → eating/pickups → score/health
+         → continue windows → day-clear. */
       game.entities.update(dt, game);
       game.updateHumanSpawning(dt);
       game.updateSpawnDirector(dt);
+      game.updateContinueWindows(dt);
+      game.updateDebugDayKeys();
       updateCrossingTimer(game, dt);
+
+      /* §7.4 — every joined player's continue window has closed. */
+      if (game.runOver()) { game.setState(GameState.GAME_OVER); return; }
+
+      /* §7.1 — "clear all buildings → the day ends." */
+      if (game.dayCleared()) game.setState(GameState.DAY_CLEAR);
     },
     draw(game, alpha) {
       const ctx = game.ctx;
       drawStreet(ctx);
+      drawLevelFeatures(ctx, game.day);
       game.entities.draw(ctx, alpha);
 
       if (CONFIG.debug.showPunchBox) {
@@ -4398,29 +5632,45 @@ Game.prototype.handlers = {
         }
       }
       drawHudStrip(game);
+      drawContinuePrompt(game);   // §7.4 — only draws while a window is open
     },
   },
 
-  /* Stub — Session 9 (all buildings rubble → headline → next day). */
+  /* 06 §7.1 — every building is rubble: the newspaper-headline interstitial,
+     then the next day. This is also where §7.2's mega-vitamin milestone
+     fires, since it rewards *clearing* day 128, not arriving at day 129. */
   [GameState.DAY_CLEAR]: {
-    draw(game) { drawStubScreen(game, 'DAY CLEAR', 'SESSION 9'); },
+    enter(game) {
+      game.storeEnergies();               // §7.1 — health carries to the next day
+      game.closeContinueWindows();        // §7.4 — the walk-off ended with the day
+      game.clearedDay = game.day;
+      game.megaVitamin = null;
+      if (LevelData.isMilestone(game.dayIndex)) game.awardMegaVitamin();
+      game.advanceDay();
+      game.day = LevelData.resolve(game.dayIndex);   // for the "NEXT" line
+    },
+    update(game) {
+      if (game.stateTime >= CONFIG.levels.clearHold || game.input.anyPressed('start')) {
+        // Clearing the last building with every monster already down still
+        // ends the run — the day advanced, but nobody is left to play it.
+        game.setState(game.runOver() ? GameState.GAME_OVER : GameState.DAY_INTRO);
+      }
+    },
+    draw(game) { drawDayClear(game); },
   },
 
-  /* Stub — Session 9 (defeat walk-off + continue prompt). */
+  /* 06 §7.4 — no monsters left: every joined player's continue window closed
+     without a buy-back-in. The run's scores stay on screen until a start
+     press takes it back to the title. */
   [GameState.GAME_OVER]: {
-    draw(game) { drawStubScreen(game, 'GAME OVER', 'SESSION 9'); },
+    update(game) {
+      if (game.stateTime >= CONFIG.ui.blinkPeriod && game.input.anyPressed('start')) {
+        game.setState(GameState.TITLE);
+      }
+    },
+    draw(game) { drawGameOver(game); },
   },
 };
-
-function drawStubScreen(game, title, session) {
-  const ctx = game.ctx;
-  const V = CONFIG.view, U = CONFIG.ui, L = CONFIG.ui.layout;
-  drawStreet(ctx);
-  textAt(ctx, title, V.width / 2, V.height / 2 + L.stubTitleOffsetY,
-    U.headingFontSize, U.textColor, 'center');
-  textAt(ctx, 'NOT IMPLEMENTED — ' + session, V.width / 2, V.height / 2 + L.stubNoteOffsetY,
-    U.bodyFontSize, U.dimTextColor, 'center');
-}
 
 
 /* ==========================================================================
@@ -4479,11 +5729,15 @@ function boot() {
   requestAnimationFrame(frame);
 
   // Debug handle — inspect state from the console, and drive headless tests.
+  // `jumpToDay(n)` (06-levels-progression §7.2) is the console half of the
+  // day-jump debug affordance; CONFIG.debug.startDay and the [ ] \ keys are
+  // the other two, and all three call the same Game.jumpToDay.
   window.RAMPAGE = {
     CONFIG, game, GameState, Entity, EntityManager, Monster, InputManager, Stance,
     Building, CellState, BuildingState, DustPuff, cellStateForHp, Pickup,
     Human, HumanRole, HumanState, Enemy, Guardsman, Helicopter, Projectile,
-    Vehicle, Paratrooper, LightningCloud, ScoreSystem,
+    Vehicle, Paratrooper, LightningCloud, ScoreSystem, LevelData, Train, Boater,
+    jumpToDay: function (n) { return game.jumpToDay(n); },
   };
   return game;
 }
